@@ -61,15 +61,21 @@ def process_company(company: CompanyConfig):
     """Process both email and web scraping for a single company"""
     print(f"\nProcessing company: {company.name}")
     
+    # Create company output directory
+    output_dir = Path(company.output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     # Email scraping
     if company.email_config:
         print("Starting email scraping...")
         try:
             scraper = EmailScraper(company)
             scraper.process_emails()
-            print("Email scraping completed")
         except Exception as e:
             print(f"Error during email scraping: {e}")
+        print("Email scraping completed")
+    else:
+        print("Email scraping skipped - no email configuration provided")
     
     # Web scraping
     print("Starting web scraping...")
@@ -79,17 +85,21 @@ def process_company(company: CompanyConfig):
         try:
             print("Processing Walmart invoices...")
             web_scraper.scrape_walmart()
-            print("Walmart processing completed")
         except Exception as e:
             print(f"Error during Walmart scraping: {e}")
+        print("Walmart processing completed")
+    else:
+        print("Walmart processing skipped - no credentials provided")
     
     if company.amazon_credentials:
         try:
             print("Processing Amazon invoices...")
             web_scraper.scrape_amazon()
-            print("Amazon processing completed")
         except Exception as e:
             print(f"Error during Amazon scraping: {e}")
+        print("Amazon processing completed")
+    else:
+        print("Amazon processing skipped - no credentials provided")
 
 def main():
     print("Loading configuration...")
