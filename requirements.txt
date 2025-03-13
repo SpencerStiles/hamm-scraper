@@ -1,0 +1,8 @@
+python-dotenv==1.0.0
+selenium==4.16.0
+beautifulsoup4==4.12.2
+imaplib2==3.6
+PyPDF2==3.0.1
+aiohttp==3.9.1
+playwright==1.41.0
+pydantic==2.5.2
