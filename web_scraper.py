@@ -521,8 +521,15 @@ class WebScraper:
                 date_dir.mkdir(exist_ok=True)
                 print(f"Saving invoices to: {date_dir}")
 
-                # Setup download handler
-                page.on('download', lambda download: self._handle_download(download, date_dir, "walmart_invoice_"))
+                # Setup download handler with a dynamic prefix
+                self.current_order_number = "unknown"
+                
+                def download_handler(download):
+                    prefix = f"walmart_invoice_{self.current_order_number}_"
+                    return self._handle_download(download, date_dir, prefix)
+                
+                # Set the download handler
+                page.on('download', download_handler)
                 
                 # Wait for the orders page to load completely
                 print("Waiting for orders page to load...")
@@ -642,12 +649,25 @@ class WebScraper:
                                 # Try to extract order number before clicking
                                 order_number = "unknown"
                                 try:
-                                    order_text = order_link.text_content()
-                                    order_match = re.search(r'Order\s+#?\s*(\w+)', order_text)
-                                    if order_match:
-                                        order_number = order_match.group(1)
+                                    # Try to extract order number from data-automation-id attribute
+                                    data_automation_id = order_link.get_attribute('data-automation-id')
+                                    if data_automation_id and "view-order-details-link-" in data_automation_id:
+                                        order_number = data_automation_id.split("view-order-details-link-")[1]
+                                        print(f"Extracted order number: {order_number}")
+                                    else:
+                                        # Try to extract from aria-label
+                                        aria_label = order_link.get_attribute('aria-label')
+                                        if aria_label and "order number" in aria_label:
+                                            # Format: "View details for order number XXXXXXXXXX"
+                                            order_number = aria_label.split("order number")[1].strip()
+                                            print(f"Extracted order number from aria-label: {order_number}")
                                 except Exception as e:
-                                    print(f"Error getting order number before click: {e}")
+                                    print(f"Could not extract order number: {e}")
+                                
+                                print(f"Processing order {i+1}/{len(order_links)} (Order #{order_number})...")
+                                
+                                # Update the current order number for the download handler
+                                self.current_order_number = order_number
                                 
                                 # Click the order link to view details
                                 print(f"Clicking on order link {i+1}...")
