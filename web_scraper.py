@@ -497,7 +497,7 @@ class WebScraper:
                         print("Trying direct navigation to the orders page...")
                         try:
                             page.goto('https://www.walmart.com/orders', timeout=30000)
-                            page.wait_for_timeout(5000)
+                            page.wait_for_load_state('domcontentloaded', timeout=15000)
                             
                             current_url = page.url
                             if '/orders' in current_url:
@@ -536,271 +536,481 @@ class WebScraper:
                     page.screenshot(path=str(screenshot_path))
                     print(f"Saved timeout screenshot to {screenshot_path}")
                 
-                # Find all "View order details" buttons with increased timeout and debugging
-                print("Looking for 'View order details' buttons...")
-                view_details_buttons = []
+                # Initialize pagination variables
+                current_page = 1
+                has_more_pages = True
+                processed_orders = 0
+                total_orders_processed = 0
                 
-                # Try multiple selectors with explicit timeout and error handling
-                view_details_selectors = [
-                    '[data-automation-id*="order-details"]',
-                    '[data-testid*="order-details"]',
-                    'a[href*="order-details"]',
-                    'a[href*="order/details"]'
-                ]
+                # Process all pages of orders
+                while has_more_pages:
+                    print(f"\n--- Processing orders page {current_page} ---\n")
+                    
+                    # Take a screenshot of the current page for debugging
+                    page_screenshot_path = self.output_dir / f"walmart_orders_page_{current_page}.png"
+                    page.screenshot(path=str(page_screenshot_path))
+                    print(f"Saved page {current_page} screenshot to {page_screenshot_path}")
                 
-                for selector in view_details_selectors:
-                    try:
-                        print(f"Trying selector: {selector}")
-                        buttons = page.query_selector_all(selector)
-                        if buttons:
-                            print(f"Found {len(buttons)} buttons using selector: {selector}")
-                            view_details_buttons = buttons
-                            break
-                    except Exception as e:
-                        print(f"Error with selector '{selector}': {e}")
-                
-                if not view_details_buttons:
-                    print("No order details buttons found. Taking a screenshot for debugging...")
-                    screenshot_path = self.output_dir / "walmart_no_orders_found.png"
-                    page.screenshot(path=str(screenshot_path))
-                    print(f"Saved screenshot to {screenshot_path}")
+                    # Find all "View order details" buttons with increased timeout and debugging
+                    print("Looking for 'View order details' buttons...")
+                    view_details_buttons = []
                     
-                    # Check the HTML content for debugging
-                    print("Checking page content for debugging...")
-                    page_content = page.content()
-                    if "order details" in page_content.lower() or "view order" in page_content.lower():
-                        print("Page content contains 'order details' or 'view order' text, but selectors failed to match")
-                    else:
-                        print("Page content does not contain expected order-related text")
+                    # Try multiple selectors with explicit timeout and error handling
+                    view_details_selectors = [
+                        '[data-automation-id*="view-order-details-*"]',
+                        '[data-automation-id*="order-details"]',
+                        '[data-testid*="order-details"]',
+                        'a[href*="order-details"]',
+                        'a[href*="order/details"]'
+                    ]
                     
-                    print("No order details found, continuing with next steps")
-                else:
-                    print(f"Found {len(view_details_buttons)} 'View order details' buttons")
-                    
-                    # Process each order
-                    order_links = page.query_selector_all('a:has-text("View details"), a:has-text("Order details"), [data-automation-id*="order-detail"]')
-                    print(f"Found {len(order_links)} order links")
-                    
-                    i = 0
-                    while i < len(order_links):
+                    for selector in view_details_selectors:
                         try:
-                            print(f"Processing order {i+1}/{len(order_links)}")
+                            print(f"Trying selector: {selector}")
+                            buttons = page.query_selector_all(selector)
+                            if buttons:
+                                print(f"Found {len(buttons)} buttons using selector: {selector}")
+                                view_details_buttons = buttons
+                                break
+                        except Exception as e:
+                            print(f"Error with selector '{selector}': {e}")
+                    
+                    if not view_details_buttons:
+                        print("No order details buttons found. Taking a screenshot for debugging...")
+                        screenshot_path = self.output_dir / f"walmart_no_orders_found_page_{current_page}.png"
+                        page.screenshot(path=str(screenshot_path))
+                        print(f"Saved screenshot to {screenshot_path}")
+                        
+                        # Check the HTML content for debugging
+                        print("Checking page content for debugging...")
+                        page_content = page.content()
+                        if "order details" in page_content.lower() or "view order" in page_content.lower():
+                            print("Page content contains 'order details' or 'view order' text, but selectors failed to match")
+                        else:
+                            print("Page content does not contain expected order-related text")
+                        
+                        # If no orders found on first page, try to navigate to next page
+                        if current_page == 1:
+                            print("No orders found on first page, will try to navigate to next page")
+                        else:
+                            print("No orders found on current page, pagination complete")
+                            has_more_pages = False
+                    else:
+                        print(f"Found {len(view_details_buttons)} 'View order details' buttons")
+                        
+                        # Process each order
+                        order_links = page.query_selector_all('a:has-text("View details"), a:has-text("Order details"), [data-automation-id*="order-detail"]')
+                        print(f"Found {len(order_links)} order links")
+                        
+                        if len(order_links) == 0:
+                            print("No order links found, trying alternative selectors...")
+                            alternative_selectors = [
+                                'a:has-text("View order")',
+                                'button:has-text("View order")',
+                                '[data-testid*="order-card"] a',
+                                '[data-automation-id*="order-card"] a'
+                            ]
                             
-                            # Create a directory for this date if it doesn't exist
-                            date_str = datetime.now().strftime('%Y-%m-%d')
-                            date_dir = self.output_dir / date_str
-                            date_dir.mkdir(exist_ok=True)
-                            
-                            # Store the current URL before clicking
-                            orders_page_url = page.url
-                            
-                            # Get the order link
-                            order_link = order_links[i]
-                            
-                            # Try to extract order number before clicking
-                            order_number = "unknown"
+                            for selector in alternative_selectors:
+                                try:
+                                    links = page.query_selector_all(selector)
+                                    if links and len(links) > 0:
+                                        print(f"Found {len(links)} order links with selector: {selector}")
+                                        order_links = links
+                                        break
+                                except Exception as e:
+                                    print(f"Error with selector {selector}: {e}")
+                        
+                        # Process each order on this page
+                        i = 0
+                        page_orders_processed = 0
+                        while i < len(order_links):
                             try:
-                                order_text = order_link.text_content()
-                                order_match = re.search(r'Order\s+#?\s*(\w+)', order_text)
-                                if order_match:
-                                    order_number = order_match.group(1)
-                            except Exception as e:
-                                print(f"Error getting order number before click: {e}")
-                            
-                            # Click the order link to view details
-                            print(f"Clicking on order link {i+1}...")
-                            try:
-                                order_link.click()
-                                print("Order link clicked, waiting for details page to load...")
+                                print(f"Processing order {i+1}/{len(order_links)} on page {current_page}")
                                 
-                                # Wait for navigation to complete
+                                # Create a directory for this date if it doesn't exist
+                                date_str = datetime.now().strftime('%Y-%m-%d')
+                                date_dir = self.output_dir / date_str
+                                date_dir.mkdir(exist_ok=True)
+                                
+                                # Store the current URL before clicking
+                                orders_page_url = page.url
+                                
+                                # Get the order link
+                                order_link = order_links[i]
+                                
+                                # Try to extract order number before clicking
+                                order_number = "unknown"
                                 try:
-                                    # Wait for the page to be fully loaded
-                                    page.wait_for_load_state("domcontentloaded", timeout=self.timeout)
-                                    
-                                    # Additional wait to ensure JavaScript has executed
-                                    page.wait_for_timeout(2000)
-                                    
-                                    print("Page fully loaded")
+                                    order_text = order_link.text_content()
+                                    order_match = re.search(r'Order\s+#?\s*(\w+)', order_text)
+                                    if order_match:
+                                        order_number = order_match.group(1)
                                 except Exception as e:
-                                    print(f"Error waiting for page to load: {e}")
+                                    print(f"Error getting order number before click: {e}")
                                 
-                                # Try to get the order number from the details page
+                                # Click the order link to view details
+                                print(f"Clicking on order link {i+1}...")
                                 try:
-                                    # Look for elements containing the order number
-                                    order_number_elements = page.query_selector_all('div.f-subheadline.m:has-text("Order#")')
-                                    for elem in order_number_elements:
-                                        text = elem.text_content()
-                                        match = re.search(r'Order\s+#?\s*(\w+)', text)
-                                        if match:
-                                            order_number = match.group(1)
-                                            print(f"Found order number: {order_number}")
-                                            break
-                                except Exception as e:
-                                    print(f"Error getting order number: {e}")
-                                
-                                # Process the invoice download using our existing code
-                                downloaded_invoices = 0
+                                    order_link.click()
+                                    print("Order link clicked, waiting for details page to load...")
                                     
-                                # Third attempt: If no invoices were downloaded, try using page.pdf() as a fallback
-                                if downloaded_invoices == 0:
-                                    print("Downloading using page.pdf()")
-                                    pdf_path = date_dir / f"walmart_invoice_{order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                                    
+                                    # Wait for navigation to complete
                                     try:
-                                        # Try to scroll through the page to ensure all content is loaded
-                                        page.evaluate("""() => {
-                                            window.scrollTo(0, 0);
-                                            let totalHeight = 0;
-                                            let distance = 100;
-                                            let timer = setInterval(() => {
-                                                let scrollHeight = document.body.scrollHeight;
-                                                window.scrollBy(0, distance);
-                                                totalHeight += distance;
-                                                if(totalHeight >= scrollHeight){
-                                                    clearInterval(timer);
-                                                }
-                                            }, 100);
-                                        }""")
-                                        page.wait_for_timeout(3000)  # Wait for scrolling to complete
+                                        # Wait for the page to be fully loaded
+                                        page.wait_for_load_state("domcontentloaded", timeout=self.timeout)
                                         
-                                        # Configure PDF options for better rendering
-                                        pdf_data = page.pdf(
-                                            format="Letter",
-                                            print_background=True,
-                                            margin={"top": "0.5in", "right": "0.5in", "bottom": "0.5in", "left": "0.5in"},
-                                            scale=0.9  # Slightly scale down to ensure everything fits
-                                        )
-                                        
-                                        with open(pdf_path, 'wb') as f:
-                                            f.write(pdf_data)
-                                        print(f"Successfully saved PDF to {pdf_path}")
-                                        
-                                        # Verify the PDF
-                                        self._verify_pdf_download(pdf_path)
-                                    except Exception as e:
-                                        print(f"Error saving PDF: {e}")
-                                        screenshot_path = self.output_dir / f"walmart_order_{order_number}_error.png"
-                                        page.screenshot(path=str(screenshot_path))
-                                        print(f"Saved error screenshot to {screenshot_path}")
-                                
-                                # Go back to the orders page
-                                print("Navigating back to orders page...")
-                                try:
-                                    # Try multiple approaches to navigate back to the orders page
-                                    try:
-                                        # First attempt: direct navigation
-                                        page.goto('https://www.walmart.com/orders', timeout=self.timeout)
-                                        page.wait_for_load_state('domcontentloaded', timeout=15000)
-                                    except Exception as nav_e:
-                                        print(f"Error during direct navigation: {nav_e}")
-                                        # Try alternative URL
-                                        page.goto('https://www.walmart.com/account/wmpurchasehistory', timeout=self.timeout)
-                                        page.wait_for_load_state('domcontentloaded', timeout=15000)
-                                    
-                                    # Try multiple selectors to find order links
-                                    selectors_to_try = [
-                                        '[data-automation-id*="order-detail"]',
-                                        'a:has-text("View order details")',
-                                        'button:has-text("View order details")',
-                                        'button:has-text("Order details")',
-                                        '[data-testid*="order-detail"]',
-                                        '[data-automation-id*="order-card"] a',
-                                        '[data-testid*="order-card"] a'
-                                    ]
-                                    
-                                    order_links = []
-                                    for selector in selectors_to_try:
-                                        try:
-                                            print(f"Trying to find order links with selector: {selector}")
-                                            links = page.query_selector_all(selector)
-                                            if links and len(links) > 0:
-                                                print(f"Found {len(links)} order links with selector: {selector}")
-                                                order_links = links
-                                                break
-                                        except Exception as sel_e:
-                                            print(f"Error with selector {selector}: {sel_e}")
-                                    
-                                    print(f"Found {len(order_links)} order links after error recovery")
-                                    
-                                    if len(order_links) <= 1:
-                                        print("Still not enough order links found, trying alternative navigation...")
-                                        
-                                        # Try direct navigation to different URLs
-                                        urls_to_try = [
-                                            'https://www.walmart.com/orders',
-                                            'https://www.walmart.com/account/wmpurchasehistory'
-                                        ]
-                                        
-                                        for url in urls_to_try:
-                                            try:
-                                                print(f"Trying direct navigation to: {url}")
-                                                page.goto(url, timeout=self.timeout)
-                                                page.wait_for_load_state('domcontentloaded', timeout=15000)
-                                                try:
-                                                    page.wait_for_load_state('networkidle', timeout=15000)
-                                                except:
-                                                    pass
-                                                page.wait_for_timeout(3000)
-                                                
-                                                # Take a screenshot after navigation
-                                                nav_screenshot_path = self.output_dir / f"walmart_after_nav_to_{url.split('/')[-1]}_{i}.png"
-                                                page.screenshot(path=str(nav_screenshot_path))
-                                                print(f"Saved navigation screenshot to {nav_screenshot_path}")
-                                                
-                                                # Try all selectors one more time
-                                                for selector in selectors_to_try:
-                                                    try:
-                                                        links = page.query_selector_all(selector)
-                                                        if links and len(links) > 1:
-                                                            print(f"Found {len(links)} order links with selector {selector} at URL {url}")
-                                                            order_links = links
-                                                            break
-                                                    except Exception as sel_e:
-                                                        print(f"Error with selector {selector} at URL {url}: {sel_e}")
-                                                
-                                                if len(order_links) > 1:
-                                                    print(f"Successfully found {len(order_links)} order links at URL {url}")
-                                                    break
-                                            except Exception as url_e:
-                                                print(f"Error navigating to {url}: {url_e}")
-                                        
-                                        print(f"Found {len(order_links)} order links")
-                                    # Skip this order and move to the next one
-                                    i += 1
-                                except Exception as e:
-                                    print(f"Error recovering after error: {e}")
-                                    # Try one last approach - go to account page first
-                                    try:
-                                        print("Trying final recovery approach...")
-                                        page.goto('https://www.walmart.com/orders', timeout=self.timeout)
-                                        page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                        # Additional wait to ensure JavaScript has executed
                                         page.wait_for_timeout(2000)
                                         
-                                        page.goto('https://www.walmart.com/account/wmpurchasehistory', timeout=self.timeout)
+                                        print("Page fully loaded")
+                                    except Exception as e:
+                                        print(f"Error waiting for page to load: {e}")
+                                    
+                                    # Try to get the order number from the details page
+                                    try:
+                                        # Look for elements containing the order number
+                                        order_number_elements = page.query_selector_all('div.f-subheadline.m:has-text("Order#")')
+                                        for elem in order_number_elements:
+                                            text = elem.text_content()
+                                            match = re.search(r'Order\s+#?\s*(\w+)', text)
+                                            if match:
+                                                order_number = match.group(1)
+                                                print(f"Found order number: {order_number}")
+                                                break
+                                    except Exception as e:
+                                        print(f"Error getting order number: {e}")
+                                    
+                                    # Process the invoice download using our existing code
+                                    downloaded_invoices = 0
+                                        
+                                    # Third attempt: If no invoices were downloaded, try using page.pdf() as a fallback
+                                    if downloaded_invoices == 0:
+                                        print("Downloading using page.pdf()")
+                                        pdf_path = date_dir / f"walmart_invoice_{order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                                        
+                                        try:
+                                            # Try to scroll through the page to ensure all content is loaded
+                                            page.evaluate("""() => {
+                                                window.scrollTo(0, 0);
+                                                let totalHeight = 0;
+                                                let distance = 100;
+                                                let timer = setInterval(() => {
+                                                    let scrollHeight = document.body.scrollHeight;
+                                                    window.scrollBy(0, distance);
+                                                    totalHeight += distance;
+                                                    if(totalHeight >= scrollHeight){
+                                                        clearInterval(timer);
+                                                    }
+                                                }, 100);
+                                            }""")
+                                            page.wait_for_timeout(3000)  # Wait for scrolling to complete
+                                            
+                                            # Configure PDF options for better rendering
+                                            pdf_data = page.pdf(
+                                                format="Letter",
+                                                print_background=True,
+                                                margin={"top": "0.5in", "right": "0.5in", "bottom": "0.5in", "left": "0.5in"},
+                                                scale=0.9  # Slightly scale down to ensure everything fits
+                                            )
+                                            
+                                            with open(pdf_path, 'wb') as f:
+                                                f.write(pdf_data)
+                                            print(f"Successfully saved PDF to {pdf_path}")
+                                            
+                                            # Verify the PDF
+                                            self._verify_pdf_download(pdf_path)
+                                        except Exception as e:
+                                            print(f"Error saving PDF: {e}")
+                                            screenshot_path = self.output_dir / f"walmart_order_{order_number}_error.png"
+                                            page.screenshot(path=str(screenshot_path))
+                                            print(f"Saved error screenshot to {screenshot_path}")
+                                    
+                                    # Go back to the orders page
+                                    print("Navigating back to orders page...")
+                                    try:
+                                        # Use the browser's back button to return to the orders page
+                                        print("Using browser back button to return to orders page")
+                                        page.go_back()
+                                        
+                                        # Enhanced waiting for page to fully load
+                                        print("Waiting for orders page to fully load after navigation...")
                                         page.wait_for_load_state('domcontentloaded', timeout=15000)
-                                        page.wait_for_timeout(3000)
                                         
-                                        print(f"Found {len(order_links)} order links after final recovery attempt")
+                                        # Wait for the page to be fully loaded
+                                        try:
+                                            print("Waiting for network activity to settle...")
+                                            page.wait_for_load_state('networkidle', timeout=15000)
+                                        except Exception as e:
+                                            print(f"Network idle timeout (not critical): {e}")
+                                            
+                                        # Additional wait to ensure JavaScript has executed
+                                        print("Additional wait to ensure all elements are rendered...")
+                                        page.wait_for_timeout(7000)  # Increased from 3000 to 7000 ms
                                         
-                                        # Skip to the next order
+                                        # Take a screenshot after navigation
+                                        back_screenshot_path = self.output_dir / f"walmart_back_navigation_{i}.png"
+                                        page.screenshot(path=str(back_screenshot_path))
+                                        print(f"Saved back navigation screenshot to {back_screenshot_path}")
+                                        
+                                        # Check if we're back on the orders page
+                                        current_url = page.url
+                                        if '/orders' in current_url or '/wmpurchasehistory' in current_url:
+                                            print(f"Successfully returned to orders page: {current_url}")
+                                        else:
+                                            print(f"Back navigation didn't reach orders page, current URL: {current_url}")
+                                            # If back button didn't work, try direct navigation
+                                            page.goto(orders_page_url, timeout=self.timeout)
+                                            page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                            page.wait_for_timeout(3000)
+                                        
+                                        # Print page HTML for debugging
+                                        page_content = page.content()
+                                        if "view-order-details-link" in page_content:
+                                            print("Page contains 'view-order-details-link' text, but selectors failed to match")
+                                        else:
+                                            print("Page does not contain 'view-order-details-link' text")
+                                        
+                                        # Try multiple selectors to find order links
+                                        selectors_to_try = [
+                                            '[data-automation-id^="view-order-details-link-"]',
+                                            'button[data-automation-id*="view-order-details-link"]',
+                                            'button:has-text("View details")',
+                                            'button[aria-label^="View details for order number"]',
+                                            # Try more generic selectors as fallbacks
+                                            'button.w_hhLG',
+                                            'button[type="button"]',
+                                            'a:has-text("View")',
+                                            '[aria-label*="View details"]'
+                                        ]
+                                        
+                                        order_links = []
+                                        for selector in selectors_to_try:
+                                            try:
+                                                print(f"Trying to find order links with selector: {selector}")
+                                                links = page.query_selector_all(selector)
+                                                if links and len(links) > 0:
+                                                    print(f"Found {len(links)} order links with selector: {selector}")
+                                                    order_links = links
+                                                    break
+                                            except Exception as e:
+                                                print(f"Error with selector {selector}: {e}")
+                                        
+                                        print(f"Found {len(order_links)} order links")
+                                        
+                                        if len(order_links) <= 1:
+                                            print("Still not enough order links found, trying alternative navigation...")
+                                            
+                                            # Try direct navigation to different URLs
+                                            urls_to_try = [
+                                                'https://www.walmart.com/orders',
+                                                'https://www.walmart.com/account/wmpurchasehistory'
+                                            ]
+                                            
+                                            for url in urls_to_try:
+                                                try:
+                                                    print(f"Trying direct navigation to: {url}")
+                                                    page.goto(url, timeout=self.timeout)
+                                                    page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                                    try:
+                                                        page.wait_for_load_state('networkidle', timeout=15000)
+                                                    except:
+                                                        pass
+                                                    page.wait_for_timeout(3000)
+                                                    
+                                                    # Take a screenshot after navigation
+                                                    nav_screenshot_path = self.output_dir / f"walmart_after_nav_to_{url.split('/')[-1]}_{i}.png"
+                                                    page.screenshot(path=str(nav_screenshot_path))
+                                                    print(f"Saved navigation screenshot to {nav_screenshot_path}")
+                                                    
+                                                    # Try all selectors one more time
+                                                    for selector in selectors_to_try:
+                                                        try:
+                                                            links = page.query_selector_all(selector)
+                                                            if links and len(links) > 1:
+                                                                print(f"Found {len(links)} order links with selector {selector} at URL {url}")
+                                                                order_links = links
+                                                                break
+                                                        except Exception as e:
+                                                            print(f"Error with selector {selector} at URL {url}: {e}")
+                                                    
+                                                    if len(order_links) > 1:
+                                                        print(f"Successfully found {len(order_links)} order links at URL {url}")
+                                                        break
+                                                except Exception as url_e:
+                                                    print(f"Error navigating to {url}: {url_e}")
+                                            
+                                            print(f"Found {len(order_links)} order links after recovery attempts")
+                                        # Skip this order and move to the next one
                                         i += 1
-                                    except Exception as final_error:
-                                        print(f"All recovery attempts failed: {final_error}")
+                                        page_orders_processed += 1
+                                    except Exception as e:
+                                        print(f"Error recovering after error: {e}")
+                                        # Try one last approach - go to account page first
+                                        try:
+                                            print("Trying final recovery approach...")
+                                            page.goto('https://www.walmart.com/orders', timeout=self.timeout)
+                                            page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                            page.wait_for_timeout(2000)
+                                            
+                                            page.goto('https://www.walmart.com/account/wmpurchasehistory', timeout=self.timeout)
+                                            page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                            page.wait_for_timeout(3000)
+                                            
+                                            print(f"Found {len(order_links)} order links after final recovery attempt")
+                                            
+                                            # Skip to the next order
+                                            i += 1
+                                            page_orders_processed += 1
+                                        except Exception as final_error:
+                                            print(f"All recovery attempts failed: {final_error}")
+                                            break
+                                except Exception as e:
+                                    print(f"Error processing order {i+1}: {e}")
+                                    # Take a screenshot for debugging
+                                    screenshot_path = self.output_dir / f"walmart_order_error_{i+1}.png"
+                                    page.screenshot(path=str(screenshot_path))
+                                    print(f"Saved error screenshot to {screenshot_path}")
+                                    
+                                    # Try to continue with the next order
+                                    i += 1
+                                    page_orders_processed += 1
+                            except Exception as outer_e:
+                                print(f"Unexpected error in order processing loop: {outer_e}")
+                                break
+                        
+                        print(f"Finished processing all orders on page {current_page}")
+                        processed_orders = page_orders_processed
+                        total_orders_processed += page_orders_processed
+                    
+                    # Check if there are more pages to process
+                    print("Checking for next page...")
+                    has_more_pages = False
+                    
+                    # Method 1: Look for a "Next" button
+                    next_page_selectors = [
+                        '[data-automation-id="next-pages-button"]',
+                        'button:has-text("Next")',
+                        'a:has-text("Next")',
+                        '[aria-label="Next page"]',
+                        '.next-page',
+                        'li.next a'
+                    ]
+                    
+                    # Wait longer for page to fully load before checking for next page
+                    try:
+                        print("Waiting for page to fully load before checking pagination...")
+                        page.wait_for_load_state('domcontentloaded', timeout=15000)
+                        page.wait_for_load_state('networkidle', timeout=15000)
+                        # Additional wait to ensure JavaScript has fully executed
+                        page.wait_for_timeout(8000)  # Increased from 5000 to 8000 ms
+                        
+                        # Take a screenshot to verify page state
+                        pagination_check_screenshot = self.output_dir / f"walmart_pagination_check_page_{current_page}.png"
+                        page.screenshot(path=str(pagination_check_screenshot))
+                        print(f"Saved pagination check screenshot to {pagination_check_screenshot}")
+                        
+                        # Check for page content to verify we're on an orders page
+                        page_content = page.content()
+                        if "order-details" in page_content or "view-order-details" in page_content:
+                            print("Verified page contains order details content")
+                        else:
+                            print("WARNING: Page may not contain order details content")
+                    except Exception as e:
+                        print(f"Warning: Wait for page load during pagination check: {e}")
+                    
+                    # First, try to find page number buttons
+                    try:
+                        print("Looking for page number buttons...")
+                        # Try to find page number elements
+                        page_buttons = page.query_selector_all('[data-automation-id^="page-"]')
+                        if not page_buttons or len(page_buttons) == 0:
+                            # Try alternative selectors for page buttons
+                            page_buttons = page.query_selector_all('.page-select-dropdown-option')
+                            if not page_buttons or len(page_buttons) == 0:
+                                page_buttons = page.query_selector_all('button[data-testid^="pagination-button-"]')
+                        
+                        if page_buttons and len(page_buttons) > 0:
+                            print(f"Found {len(page_buttons)} page number buttons")
+                            
+                            # Try to find the next page button
+                            for button in page_buttons:
+                                try:
+                                    button_text = button.inner_text().strip()
+                                    print(f"Found page button with text: '{button_text}'")
+                                    
+                                    # Try to determine if this is the next page button
+                                    if button_text.isdigit() and int(button_text) == current_page + 1:
+                                        print(f"Found next page button ({button_text})")
+                                        print("Clicking on next page button...")
+                                        
+                                        # Click the button
+                                        button.click()
+                                        page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                        try:
+                                            page.wait_for_load_state('networkidle', timeout=15000)
+                                        except Exception as e:
+                                            print(f"Network idle timeout after page button click (not critical): {e}")
+                                        
+                                        # Wait longer after clicking
+                                        page.wait_for_timeout(10000)  # 10 seconds wait
+                                        
+                                        # Take a screenshot after navigation
+                                        next_page_screenshot = self.output_dir / f"walmart_next_page_button_{button_text}.png"
+                                        page.screenshot(path=str(next_page_screenshot))
+                                        print(f"Saved next page navigation screenshot to {next_page_screenshot}")
+                                        
+                                        # Update page counter and continue
+                                        current_page += 1
+                                        has_more_pages = True
                                         break
-                            except Exception as e:
-                                print(f"Error processing order {i+1}: {e}")
-                                # Take a screenshot for debugging
-                                screenshot_path = self.output_dir / f"walmart_order_error_{i+1}.png"
-                                page.screenshot(path=str(screenshot_path))
-                                print(f"Saved error screenshot to {screenshot_path}")
-                                
-                                # Try to continue with the next order
-                                i += 1
-                        except Exception as outer_e:
-                            print(f"Unexpected error in order processing loop: {outer_e}")
-                            break
-                    print("Finished processing all orders")
+                                except Exception as e:
+                                    print(f"Error checking page button: {e}")
+                            
+                            # If we found and clicked a page button, continue to next iteration
+                            if has_more_pages:
+                                continue
+                    except Exception as e:
+                        print(f"Error trying to navigate using page number buttons: {e}")
+                    
+                    # If page number navigation didn't work, try the next button
+                    for selector in next_page_selectors:
+                        try:
+                            next_button = page.query_selector(selector)
+                            if next_button:
+                                print(f"Found next page button with selector: {selector}")
+                                # Check if the button is disabled
+                                is_disabled = next_button.get_attribute('disabled') == 'true' or next_button.get_attribute('aria-disabled') == 'true'
+                                if not is_disabled:
+                                    print("Next button is enabled, clicking to navigate to next page")
+                                    next_button.click()
+                                    page.wait_for_load_state('domcontentloaded', timeout=20000)
+                                    page.wait_for_load_state('load', timeout=20000)
+                                    current_page += 1
+                                    has_more_pages = True
+                                    
+                                    # Take a screenshot after navigation
+                                    next_page_screenshot = self.output_dir / f"walmart_next_page_{current_page}.png"
+                                    page.screenshot(path=str(next_page_screenshot))
+                                    print(f"Saved next page screenshot to {next_page_screenshot}")
+                                    break
+                                else:
+                                    print("Next button is disabled, no more pages")
+                        except Exception as e:
+                            print(f"Error with next page selector {selector}: {e}")
+                    
+                    # Break the pagination loop if we've processed too many pages (safety measure)
+                    if current_page > 10:  # Limit to 10 pages as a safety measure
+                        print("Reached maximum page limit (10), stopping pagination")
+                        has_more_pages = False
+                    
+                    print(f"Processed {processed_orders} orders on current page, {total_orders_processed} orders total")
+                    if has_more_pages:
+                        print(f"Moving to page {current_page}")
+                    else:
+                        print("No more pages to process")
+                
+                print(f"Finished processing all orders across {current_page} pages. Total orders processed: {total_orders_processed}")
             except TimeoutError as e:
                 print(f"Timeout error: {e}")
                 print("The operation took too long to complete. This could be due to slow internet connection or website changes.")
