@@ -337,6 +337,114 @@ class WebScraper:
             print(f"Error verifying PDF download: {e}")
             return False
 
+    def _extract_purchase_date(self, page):
+        """Extract the purchase date from the invoice page."""
+        try:
+            # Try multiple selectors to find the purchase date element
+            date_selectors = [
+                "h1.print-bill-date", 
+                "h1.w_kV33.w_LD4J.w_mvVb.f3.f-subheadline-m.di-m.dark-gray-m.print-bill-date",
+                "h1:has-text('purchase')",
+                "div:has-text('Order placed')",
+                "div:has-text('Purchase date')",
+                "span:has-text('Order placed')",
+                "span:has-text('Purchase date')"
+            ]
+            
+            for selector in date_selectors:
+                date_element = page.query_selector(selector)
+                if date_element:
+                    date_text = date_element.text_content()
+                    print(f"Found potential purchase date text: {date_text}")
+                    
+                    # Try different regex patterns to extract the date
+                    date_patterns = [
+                        r'([A-Za-z]+\s+\d+,\s+\d{4})',  # "Jul 29, 2024"
+                        r'(\d{1,2}/\d{1,2}/\d{2,4})',   # "7/29/2024" or "7/29/24"
+                        r'Order placed\s+([A-Za-z]+\s+\d+,\s+\d{4})',  # "Order placed Jul 29, 2024"
+                        r'Purchase date\s+([A-Za-z]+\s+\d+,\s+\d{4})'  # "Purchase date Jul 29, 2024"
+                    ]
+                    
+                    for pattern in date_patterns:
+                        date_match = re.search(pattern, date_text)
+                        if date_match:
+                            date_str = date_match.group(1)
+                            try:
+                                # Try different date formats
+                                for date_format in ["%b %d, %Y", "%m/%d/%Y", "%m/%d/%y"]:
+                                    try:
+                                        purchase_date = datetime.strptime(date_str, date_format)
+                                        print(f"Extracted purchase date: {purchase_date}")
+                                        return purchase_date
+                                    except ValueError:
+                                        continue
+                            except Exception as e:
+                                print(f"Error parsing date '{date_str}': {e}")
+            
+            # If we couldn't find the date with selectors, try to extract it from the page URL
+            current_url = page.url
+            url_date_match = re.search(r'purchaseDate=(\d{4}-\d{2}-\d{2})', current_url)
+            if url_date_match:
+                date_str = url_date_match.group(1)
+                try:
+                    purchase_date = datetime.strptime(date_str, "%Y-%m-%d")
+                    print(f"Extracted purchase date from URL: {purchase_date}")
+                    return purchase_date
+                except Exception as e:
+                    print(f"Error parsing date from URL '{date_str}': {e}")
+            
+            # If all attempts fail, take a screenshot for debugging
+            screenshot_path = self.output_dir / "purchase_date_extraction_failed.png"
+            page.screenshot(path=str(screenshot_path))
+            print(f"Could not find purchase date, saved screenshot to {screenshot_path}")
+            
+            # If we can't find the date, return None
+            return None
+        except Exception as e:
+            print(f"Error extracting purchase date: {e}")
+            return None
+    
+    def _get_invoice_directory(self, company, purchase_date=None):
+        """Get the directory for saving invoices based on purchase date."""
+        # Base downloads directory
+        downloads_dir = Path("downloads") / company
+        
+        if purchase_date:
+            # Organize by year/month
+            year_dir = downloads_dir / str(purchase_date.year)
+            month_dir = year_dir / purchase_date.strftime("%m-%b")  # e.g., "07-Jul"
+            
+            # Create directories if they don't exist
+            month_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Created/verified directory structure: {month_dir}")
+            return month_dir
+        else:
+            # Fallback to current date if purchase date not available
+            current_date = datetime.now()
+            year_dir = downloads_dir / str(current_date.year)
+            month_dir = year_dir / current_date.strftime("%m-%b")
+            
+            # Create a special "unknown_date" subfolder to distinguish these invoices
+            unknown_date_dir = month_dir / "unknown_date"
+            unknown_date_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Could not determine purchase date, using fallback directory: {unknown_date_dir}")
+            return unknown_date_dir
+    
+    def _check_invoice_exists(self, directory, order_number):
+        """Check if an invoice for this order already exists."""
+        if not order_number or order_number == "unknown":
+            print("Cannot check for existing invoice: order number is unknown")
+            return False
+            
+        # Look for any file with this order number in the filename
+        pattern = f"*{order_number}*"
+        existing_files = list(directory.glob(pattern))
+        
+        if existing_files:
+            print(f"Invoice for order {order_number} already exists: {existing_files[0]}")
+            return True
+        return False
+
     def scrape_walmart(self):
         if not self.config.walmart_credentials:
             print(f"No Walmart credentials for {self.config.name}")
@@ -701,13 +809,31 @@ class WebScraper:
                                     except Exception as e:
                                         print(f"Error getting order number: {e}")
                                     
+                                    # Extract purchase date
+                                    purchase_date = self._extract_purchase_date(page)
+                                    if purchase_date:
+                                        # Create directory based on purchase date
+                                        invoice_dir = self._get_invoice_directory(self.config.name, purchase_date)
+                                        print(f"Saving invoice to directory: {invoice_dir}")
+                                        
+                                        # Check if invoice already exists
+                                        if self._check_invoice_exists(invoice_dir, order_number):
+                                            print("Skipping this order as the invoice already exists")
+                                            i += 1
+                                            page_orders_processed += 1
+                                            continue
+                                    else:
+                                        print("Could not extract purchase date, using default directory")
+                                        invoice_dir = self._get_invoice_directory(self.config.name)
+                                        print(f"Saving invoice to directory: {invoice_dir}")
+                                    
                                     # Process the invoice download using our existing code
                                     downloaded_invoices = 0
                                         
                                     # Third attempt: If no invoices were downloaded, try using page.pdf() as a fallback
                                     if downloaded_invoices == 0:
                                         print("Downloading using page.pdf()")
-                                        pdf_path = date_dir / f"walmart_invoice_{order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                                        pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                                         
                                         try:
                                             # Try to scroll through the page to ensure all content is loaded
