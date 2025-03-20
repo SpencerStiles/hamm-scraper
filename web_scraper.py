@@ -328,8 +328,8 @@ class WebScraper:
                         return False
             except ImportError:
                 print("PyPDF2 not installed, skipping detailed PDF verification")
-            except Exception as pdf_error:
-                print(f"Error verifying PDF content: {pdf_error}")
+            except Exception as e:
+                print(f"Error verifying PDF content: {e}")
                 return False
             
             return True
@@ -672,11 +672,21 @@ class WebScraper:
                     
                     # Try multiple selectors with explicit timeout and error handling
                     view_details_selectors = [
-                        '[data-automation-id*="view-order-details-*"]',
+                        '[data-automation-id*="view-order-details-"]',
                         '[data-automation-id*="order-details"]',
                         '[data-testid*="order-details"]',
                         'a[href*="order-details"]',
-                        'a[href*="order/details"]'
+                        'a[href*="order/details"]',
+                        'button:has-text("View details")',
+                        'a:has-text("View details")',
+                        'button:has-text("Order details")',
+                        'a:has-text("Order details")',
+                        'button:has-text("View order")',
+                        'a:has-text("View order")',
+                        '[aria-label*="View details"]',
+                        '[aria-label*="order details"]',
+                        '[data-testid*="order-card"]',
+                        '[data-automation-id*="order-card"]'
                     ]
                     
                     for selector in view_details_selectors:
@@ -690,26 +700,260 @@ class WebScraper:
                         except Exception as e:
                             print(f"Error with selector '{selector}': {e}")
                     
+                    # If no buttons found, try a more aggressive approach by looking for any clickable elements
+                    if not view_details_buttons:
+                        print("No specific order buttons found, trying to find any potential order elements...")
+                        try:
+                            # Look for any elements that might be order cards or containers
+                            potential_order_elements = page.query_selector_all('[class*="order"], [class*="purchase"], [id*="order"], [id*="purchase"]')
+                            if potential_order_elements:
+                                print(f"Found {len(potential_order_elements)} potential order elements")
+                                
+                                # Try to find clickable elements within these containers
+                                for elem in potential_order_elements:
+                                    try:
+                                        clickable = elem.query_selector('a, button')
+                                        if clickable:
+                                            view_details_buttons.append(clickable)
+                                    except:
+                                        pass
+                                
+                                if view_details_buttons:
+                                    print(f"Found {len(view_details_buttons)} clickable elements within order containers")
+                        except Exception as e:
+                            print(f"Error trying to find generic order elements: {e}")
+                    
+                    # Take a screenshot of the page for manual inspection
+                    screenshot_path = self.output_dir / f"walmart_orders_page_{current_page}_detection.png"
+                    page.screenshot(path=str(screenshot_path))
+                    print(f"Saved order detection screenshot to {screenshot_path}")
+                    
+                    # Save the HTML content for debugging
+                    html_path = self.output_dir / f"walmart_orders_page_{current_page}.html"
+                    with open(html_path, 'w', encoding='utf-8') as f:
+                        f.write(page.content())
+                    print(f"Saved page HTML to {html_path} for debugging")
+                    
                     if not view_details_buttons:
                         print("No order details buttons found. Taking a screenshot for debugging...")
-                        screenshot_path = self.output_dir / f"walmart_no_orders_found_page_{current_page}.png"
-                        page.screenshot(path=str(screenshot_path))
-                        print(f"Saved screenshot to {screenshot_path}")
                         
                         # Check the HTML content for debugging
                         print("Checking page content for debugging...")
                         page_content = page.content()
                         if "order details" in page_content.lower() or "view order" in page_content.lower():
                             print("Page content contains 'order details' or 'view order' text, but selectors failed to match")
+                            
+                            # Try JavaScript approach to find and click order links
+                            print("Attempting JavaScript approach to find order links...")
+                            try:
+                                # Use JavaScript to find elements with text containing "View" and "order"
+                                js_result = page.evaluate("""() => {
+                                    const elements = Array.from(document.querySelectorAll('a, button'));
+                                    const orderLinks = elements.filter(el => {
+                                        const text = el.innerText.toLowerCase();
+                                        return (text.includes('view') && (text.includes('order') || text.includes('details')));
+                                    });
+                                    return orderLinks.length;
+                                }""")
+                                print(f"JavaScript found {js_result} potential order links")
+                                
+                                if js_result > 0:
+                                    # We found links via JavaScript, now use them
+                                    print("Found order links via JavaScript, will use them for processing")
+                                    has_js_links = True
+                                else:
+                                    has_js_links = False
+                            except Exception as e:
+                                print(f"JavaScript approach failed: {e}")
+                                has_js_links = False
+                            
+                            # If we found links via JavaScript, don't skip this page
+                            if has_js_links:
+                                # Process orders using JavaScript
+                                print("Processing orders using JavaScript approach...")
+                                
+                                # Get the number of order links
+                                num_links = page.evaluate("""() => {
+                                    const elements = Array.from(document.querySelectorAll('a, button'));
+                                    const orderLinks = elements.filter(el => {
+                                        const text = el.innerText.toLowerCase();
+                                        return (text.includes('view') && (text.includes('order') || text.includes('details')));
+                                    });
+                                    return orderLinks.length;
+                                }""")
+                                
+                                # Process each order link
+                                for i in range(num_links):
+                                    try:
+                                        print(f"Processing JavaScript-found order {i+1}/{num_links}")
+                                        
+                                        # Click the link using JavaScript
+                                        page.evaluate(f"""(index) => {{
+                                            const elements = Array.from(document.querySelectorAll('a, button'));
+                                            const orderLinks = elements.filter(el => {{
+                                                const text = el.innerText.toLowerCase();
+                                                return (text.includes('view') && (text.includes('order') || text.includes('details')));
+                                            }});
+                                            if (orderLinks[index]) orderLinks[index].click();
+                                        }}""", i)
+                                        
+                                        # Wait for navigation
+                                        page.wait_for_load_state("domcontentloaded", timeout=self.timeout)
+                                        page.wait_for_timeout(2000)
+                                        
+                                        # Extract purchase date and process the invoice
+                                        purchase_date = self._extract_purchase_date(page)
+                                        
+                                        # Get order number if possible
+                                        try:
+                                            order_number = "unknown"
+                                            order_number_elements = page.query_selector_all('div:has-text("Order#"), span:has-text("Order#")')
+                                            for elem in order_number_elements:
+                                                text = elem.text_content()
+                                                match = re.search(r'Order\s+#?\s*(\w+)', text)
+                                                if match:
+                                                    order_number = match.group(1)
+                                                    print(f"Found order number: {order_number}")
+                                                    break
+                                        except:
+                                            pass
+                                        
+                                        # Set the current order number for the download handler
+                                        self.current_order_number = order_number
+                                        
+                                        if purchase_date:
+                                            # Create directory based on purchase date
+                                            invoice_dir = self._get_invoice_directory(self.config.name, purchase_date)
+                                            print(f"Saving invoice to directory: {invoice_dir}")
+                                            
+                                            # Check if invoice already exists
+                                            if self._check_invoice_exists(invoice_dir, order_number):
+                                                print("Invoice already exists. Assuming all older invoices have been processed.")
+                                                print("Ending the process to avoid redundant processing.")
+                                                return  # End the entire scraping process
+                                        else:
+                                            print("Could not extract purchase date, using default directory")
+                                            invoice_dir = self._get_invoice_directory(self.config.name)
+                                            print(f"Saving invoice to directory: {invoice_dir}")
+                                            
+                                            # Also check if invoice exists in the fallback directory
+                                            if self._check_invoice_exists(invoice_dir, order_number):
+                                                print("Invoice already exists in fallback directory. Ending the process.")
+                                                return  # End the entire scraping process
+                                        
+                                        # Download the invoice
+                                        print("Downloading using page.pdf()")
+                                        
+                                        # Create filename with purchase date (MM-DD) instead of download timestamp
+                                        if purchase_date:
+                                            date_str = purchase_date.strftime('%m-%d')
+                                            pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{date_str}.pdf"
+                                        else:
+                                            # Fallback to current date if purchase date couldn't be extracted
+                                            current_date = datetime.now()
+                                            date_str = current_date.strftime('%m-%d')
+                                            pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{date_str}_unknown_purchase_date.pdf"
+                                        
+                                        # Generate PDF
+                                        try:
+                                            # Scroll through the page
+                                            page.evaluate("""() => {
+                                                window.scrollTo(0, 0);
+                                                let totalHeight = 0;
+                                                let distance = 100;
+                                                let timer = setInterval(() => {
+                                                    let scrollHeight = document.body.scrollHeight;
+                                                    window.scrollBy(0, distance);
+                                                    totalHeight += distance;
+                                                    if(totalHeight >= scrollHeight){
+                                                        clearInterval(timer);
+                                                    }
+                                                }, 100);
+                                            }""")
+                                            page.wait_for_timeout(3000)
+                                            
+                                            # Generate PDF
+                                            pdf_data = page.pdf(
+                                                format="Letter",
+                                                print_background=True,
+                                                margin={"top": "0.5in", "right": "0.5in", "bottom": "0.5in", "left": "0.5in"},
+                                                scale=0.9
+                                            )
+                                            
+                                            with open(pdf_path, 'wb') as f:
+                                                f.write(pdf_data)
+                                            print(f"Successfully saved PDF to {pdf_path}")
+                                            
+                                            # Verify the PDF
+                                            self._verify_pdf_download(pdf_path)
+                                        except Exception as e:
+                                            print(f"Error saving PDF: {e}")
+                                        
+                                        # Go back to orders page
+                                        print("Navigating back to orders page...")
+                                        page.goto('https://www.walmart.com/orders', timeout=self.timeout)
+                                        page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                        page.wait_for_timeout(5000)
+                                        
+                                    except Exception as e:
+                                        print(f"Error processing JavaScript-found order {i+1}: {e}")
+                                        # Try to go back to orders page
+                                        try:
+                                            page.goto('https://www.walmart.com/orders', timeout=self.timeout)
+                                            page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                            page.wait_for_timeout(5000)
+                                        except:
+                                            pass
+                                
+                                # After processing all JavaScript-found orders, move to next page
+                                current_page += 1
+                                continue
                         else:
                             print("Page content does not contain expected order-related text")
                         
                         # If no orders found on first page, try to navigate to next page
                         if current_page == 1:
                             print("No orders found on first page, will try to navigate to next page")
+                            current_page += 1
+                            
+                            # Try direct navigation to page 2
+                            try:
+                                print("Trying direct navigation to page 2...")
+                                page.goto('https://www.walmart.com/orders?page=2', timeout=self.timeout)
+                                page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                page.wait_for_timeout(5000)
+                                continue
+                            except Exception as e:
+                                print(f"Error navigating to page 2: {e}")
                         else:
-                            print("No orders found on current page, pagination complete")
-                            has_more_pages = False
+                            # Try to navigate to the next page even if no orders were found on this page
+                            print(f"No orders found on page {current_page}, trying next page anyway")
+                            current_page += 1
+                            
+                            # Try direct navigation to next page
+                            try:
+                                print(f"Trying direct navigation to page {current_page}...")
+                                page.goto(f'https://www.walmart.com/orders?page={current_page}', timeout=self.timeout)
+                                page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                page.wait_for_timeout(5000)
+                                continue
+                            except Exception as e:
+                                print(f"Error navigating to page {current_page}: {e}")
+                                
+                                # If direct navigation fails, try the next page button
+                                try:
+                                    print("Trying to find and click next page button...")
+                                    next_button = page.query_selector('button:has-text("Next"), a:has-text("Next"), [aria-label="Next page"]')
+                                    if next_button:
+                                        next_button.click()
+                                        page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                        page.wait_for_timeout(5000)
+                                        continue
+                                except Exception as e:
+                                    print(f"Error clicking next page button: {e}")
+                                    
+                                print("No more pages to process")
+                                has_more_pages = False
                     else:
                         print(f"Found {len(view_details_buttons)} 'View order details' buttons")
                         
@@ -818,14 +1062,18 @@ class WebScraper:
                                         
                                         # Check if invoice already exists
                                         if self._check_invoice_exists(invoice_dir, order_number):
-                                            print("Skipping this order as the invoice already exists")
-                                            i += 1
-                                            page_orders_processed += 1
-                                            continue
+                                            print("Invoice already exists. Assuming all older invoices have been processed.")
+                                            print("Ending the process to avoid redundant processing.")
+                                            return  # End the entire scraping process
                                     else:
                                         print("Could not extract purchase date, using default directory")
                                         invoice_dir = self._get_invoice_directory(self.config.name)
                                         print(f"Saving invoice to directory: {invoice_dir}")
+                                        
+                                        # Also check if invoice exists in the fallback directory
+                                        if self._check_invoice_exists(invoice_dir, order_number):
+                                            print("Invoice already exists in fallback directory. Ending the process.")
+                                            return  # End the entire scraping process
                                      
                                     # Process the invoice download using our existing code
                                     downloaded_invoices = 0
