@@ -336,7 +336,7 @@ class WebScraper:
         except Exception as e:
             print(f"Error verifying PDF download: {e}")
             return False
-
+    
     def _extract_purchase_date(self, page):
         """Extract the purchase date from the invoice page."""
         try:
@@ -826,14 +826,23 @@ class WebScraper:
                                         print("Could not extract purchase date, using default directory")
                                         invoice_dir = self._get_invoice_directory(self.config.name)
                                         print(f"Saving invoice to directory: {invoice_dir}")
-                                    
+                                     
                                     # Process the invoice download using our existing code
                                     downloaded_invoices = 0
                                         
                                     # Third attempt: If no invoices were downloaded, try using page.pdf() as a fallback
                                     if downloaded_invoices == 0:
                                         print("Downloading using page.pdf()")
-                                        pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                                        
+                                        # Create filename with purchase date (MM-DD) instead of download timestamp
+                                        if purchase_date:
+                                            date_str = purchase_date.strftime('%m-%d')
+                                            pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{date_str}.pdf"
+                                        else:
+                                            # Fallback to current date if purchase date couldn't be extracted
+                                            current_date = datetime.now()
+                                            date_str = current_date.strftime('%m-%d')
+                                            pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{date_str}_unknown_purchase_date.pdf"
                                         
                                         try:
                                             # Try to scroll through the page to ensure all content is loaded
