@@ -268,37 +268,29 @@ class WebScraper:
         except Exception as e:
             print(f"Error saving session: {e}")
 
-    def _handle_download(self, download, target_dir, prefix=""):
-        """Handle a download event from Playwright."""
+    def _handle_download(self, download, directory, prefix=""):
+        """Handle a download from a page, saving it to the specified directory with an optional prefix."""
         try:
-            # Ensure the target directory exists
-            target_dir = Path(target_dir)
-            target_dir.mkdir(exist_ok=True)
+            # Create the directory if it doesn't exist
+            directory.mkdir(parents=True, exist_ok=True)
             
             # Get the suggested filename from the download
-            suggested_name = download.suggested_filename
-            print(f"Download started with suggested filename: {suggested_name}")
+            filename = download.suggested_filename
             
-            # Create a unique filename with the provided prefix
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"{prefix}{timestamp}_{suggested_name}"
-            if not filename:
-                # If no filename is suggested, create a generic one
-                extension = ".pdf"  # Default to PDF for invoices
-                filename = f"{prefix}{timestamp}{extension}"
+            # Add prefix if specified
+            if prefix:
+                filename = f"{prefix}{filename}"
             
-            # Full path for the download
-            download_path = target_dir / filename
+            # Save the file
+            download_path = directory / filename
+            download.save_as(download_path)
             
-            # Save the download
-            download.save_as(str(download_path))
-            print(f"Download saved to: {download_path}")
-            
+            print(f"Downloaded file: {filename} to {directory}")
             return download_path
         except Exception as e:
             print(f"Error handling download: {e}")
             return None
-    
+
     def _verify_pdf_download(self, pdf_path):
         """Verify that the downloaded PDF file is valid and not empty."""
         try:
@@ -404,6 +396,126 @@ class WebScraper:
             print(f"Error extracting purchase date: {e}")
             return None
     
+    def _extract_amazon_purchase_date(self, page):
+        """Extract purchase date from Amazon order page."""
+        try:
+            # Try multiple selectors to find the purchase date element
+            date_selectors = [
+                '.order-date-invoice-item',
+                '.a-color-secondary:has-text("Order placed")',
+                '.order-date',
+                '.a-box-inner .a-section .a-span4 .a-color-secondary',
+                'span:has-text("Order placed:")',
+                '.order-info:has-text("Order placed")'
+            ]
+            
+            for selector in date_selectors:
+                try:
+                    date_element = page.query_selector(selector)
+                    if date_element:
+                        date_text = date_element.text_content()
+                        print(f"Found date text: {date_text}")
+                        
+                        # Try to extract date with regex
+                        date_patterns = [
+                            r'Order placed:\s*(\w+\s+\d+,\s*\d{4})',
+                            r'Order placed\s*(\w+\s+\d+,\s*\d{4})',
+                            r'Ordered on\s*(\w+\s+\d+,\s*\d{4})',
+                            r'(\w+\s+\d+,\s*\d{4})',
+                            r'(\d{1,2}/\d{1,2}/\d{2,4})',
+                            r'(\d{1,2}-\d{1,2}-\d{2,4})'
+                        ]
+                        
+                        for pattern in date_patterns:
+                            match = re.search(pattern, date_text)
+                            if match:
+                                date_str = match.group(1)
+                                print(f"Extracted date string: {date_str}")
+                                
+                                # Try multiple date formats
+                                date_formats = [
+                                    '%B %d, %Y',  # January 1, 2023
+                                    '%b %d, %Y',  # Jan 1, 2023
+                                    '%m/%d/%Y',   # 01/01/2023
+                                    '%m/%d/%y',   # 01/01/23
+                                    '%m-%d-%Y',   # 01-01-2023
+                                    '%m-%d-%y'    # 01-01-23
+                                ]
+                                
+                                for date_format in date_formats:
+                                    try:
+                                        purchase_date = datetime.strptime(date_str, date_format)
+                                        print(f"Parsed purchase date: {purchase_date}")
+                                        return purchase_date
+                                    except ValueError:
+                                        continue
+                except Exception as e:
+                    print(f"Error with date selector {selector}: {e}")
+            
+            # Try JavaScript approach as a fallback
+            try:
+                js_result = page.evaluate("""() => {
+                    // Look for elements with date-related text
+                    const dateElements = document.querySelectorAll('*');
+                    for (const elem of dateElements) {
+                        const text = elem.textContent;
+                        if (text && (
+                            text.includes('Order placed') || 
+                            text.includes('Ordered on') ||
+                            text.includes('Order date')
+                        )) {
+                            return text;
+                        }
+                    }
+                    return null;
+                }""")
+                
+                if js_result:
+                    print(f"Found date text via JavaScript: {js_result}")
+                    
+                    # Try to extract date with regex
+                    date_patterns = [
+                        r'Order placed:\s*(\w+\s+\d+,\s*\d{4})',
+                        r'Order placed\s*(\w+\s+\d+,\s*\d{4})',
+                        r'Ordered on\s*(\w+\s+\d+,\s*\d{4})',
+                        r'(\w+\s+\d+,\s*\d{4})',
+                        r'(\d{1,2}/\d{1,2}/\d{2,4})',
+                        r'(\d{1,2}-\d{1,2}-\d{2,4})'
+                    ]
+                    
+                    for pattern in date_patterns:
+                        match = re.search(pattern, js_result)
+                        if match:
+                            date_str = match.group(1)
+                            print(f"Extracted date string from JavaScript: {date_str}")
+                            
+                            # Try multiple date formats
+                            date_formats = [
+                                '%B %d, %Y',  # January 1, 2023
+                                '%b %d, %Y',  # Jan 1, 2023
+                                '%m/%d/%Y',   # 01/01/2023
+                                '%m/%d/%y',   # 01/01/23
+                                '%m-%d-%Y',   # 01-01-2023
+                                '%m-%d-%y'    # 01-01-23
+                            ]
+                            
+                            for date_format in date_formats:
+                                try:
+                                    purchase_date = datetime.strptime(date_str, date_format)
+                                    print(f"Parsed purchase date from JavaScript: {purchase_date}")
+                                    return purchase_date
+                                except ValueError:
+                                    continue
+            except Exception as e:
+                print(f"Error in JavaScript date extraction: {e}")
+            
+            # If we get here, we couldn't find a date
+            print("Could not extract purchase date, using current date")
+            return datetime.now()
+        except Exception as e:
+            print(f"Error extracting purchase date: {e}")
+            return datetime.now()
+
     def _get_invoice_directory(self, company, purchase_date=None):
         """Get the directory for saving invoices based on purchase date."""
         # Base downloads directory
@@ -576,7 +688,6 @@ class WebScraper:
                         # Take a screenshot for debugging
                         screenshot_path = self.output_dir / "walmart_login_check_failed.png"
                         page.screenshot(path=str(screenshot_path))
-                        print(f"Saved login check screenshot to {screenshot_path}")
                 
                 # After login, navigate to Purchase Orders page
                 print("Navigating to Purchase Orders page...")
@@ -755,6 +866,7 @@ class WebScraper:
                                     });
                                     return orderLinks.length;
                                 }""")
+                                
                                 print(f"JavaScript found {js_result} potential order links")
                                 
                                 if js_result > 0:
@@ -854,9 +966,8 @@ class WebScraper:
                                             date_str = current_date.strftime('%m-%d')
                                             pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{date_str}_unknown_purchase_date.pdf"
                                         
-                                        # Generate PDF
                                         try:
-                                            # Scroll through the page
+                                            # Try to scroll through the page
                                             page.evaluate("""() => {
                                                 window.scrollTo(0, 0);
                                                 let totalHeight = 0;
@@ -870,7 +981,7 @@ class WebScraper:
                                                     }
                                                 }, 100);
                                             }""")
-                                            page.wait_for_timeout(3000)
+                                            page.wait_for_timeout(3000)  # Wait for scrolling to complete
                                             
                                             # Generate PDF
                                             pdf_data = page.pdf(
@@ -1093,7 +1204,7 @@ class WebScraper:
                                             pdf_path = invoice_dir / f"walmart_invoice_{order_number}_{date_str}_unknown_purchase_date.pdf"
                                         
                                         try:
-                                            # Try to scroll through the page to ensure all content is loaded
+                                            # Try to scroll through the page
                                             page.evaluate("""() => {
                                                 window.scrollTo(0, 0);
                                                 let totalHeight = 0;
@@ -1109,7 +1220,7 @@ class WebScraper:
                                             }""")
                                             page.wait_for_timeout(3000)  # Wait for scrolling to complete
                                             
-                                            # Configure PDF options for better rendering
+                                            # Generate PDF
                                             pdf_data = page.pdf(
                                                 format="Letter",
                                                 print_background=True,
@@ -1381,9 +1492,19 @@ class WebScraper:
                         try:
                             next_button = page.query_selector(selector)
                             if next_button:
-                                print(f"Found next page button with selector: {selector}")
+                                print(f"Found next page button using selector: {selector}")
+                                
                                 # Check if the button is disabled
-                                is_disabled = next_button.get_attribute('disabled') == 'true' or next_button.get_attribute('aria-disabled') == 'true'
+                                is_disabled = False
+                                try:
+                                    parent_element = next_button.evaluate('node => node.parentElement')
+                                    if parent_element:
+                                        parent_class = parent_element.get_attribute('class') or ''
+                                        if 'a-disabled' in parent_class:
+                                            is_disabled = True
+                                except:
+                                    pass
+                                
                                 if not is_disabled:
                                     print("Next button is enabled, clicking to navigate to next page")
                                     next_button.click()
@@ -1399,6 +1520,8 @@ class WebScraper:
                                     break
                                 else:
                                     print("Next button is disabled, no more pages")
+                            else:
+                                print(f"No next page button found with selector: {selector}")
                         except Exception as e:
                             print(f"Error with next page selector {selector}: {e}")
                     
@@ -1438,168 +1561,200 @@ class WebScraper:
                     browser.close()
 
     def scrape_amazon(self):
-        if not self.config.amazon_credentials:
-            print(f"No Amazon credentials for {self.config.name}")
-            return
-
-        with sync_playwright() as playwright:
-            browser, context = self._setup_browser(
-                playwright, 
-                self.amazon_session_file,
-                self.amazon_profile_dir if self.persistent_browser else None
-            )
-            page = context.new_page()
+        """Scrape Amazon invoices."""
+        print("\n=== Starting Amazon Scraping ===\n")
+        
+        # Initialize browser and context
+        browser = None
+        try:
+            # Setup browser with appropriate options
+            browser_type = 'chromium'
+            if self.edge_mode:
+                browser_type = 'chromium'
+                
+            browser_args = []
+            # Add user agent for Microsoft Edge to reduce detection
+            browser_args.append('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59')
             
-            try:
-                if self.pure_manual:
-                    print("\n=== PURE MANUAL MODE ===")
-                    print("Please follow these steps in the browser window:")
-                    print("1. Navigate to https://www.amazon.com")
-                    print("2. Click on 'Account & Lists' or 'Sign In'")
-                    print("3. Log in with your credentials")
-                    print("4. Complete any verification challenges")
-                    print("5. Navigate to https://www.amazon.com/gp/your-account/order-history when ready")
-                    print("Type 'continue' when you've completed these steps, or 'skip' to abort.")
-                    print("==========================================\n")
+            # Add additional headers to appear more like a regular browser
+            browser_args.append('--accept-language=en-US,en;q=0.9')
+            
+            # Check if we should use a persistent browser profile
+            if self.persistent_browser:
+                print("Using persistent browser profile for Amazon")
+                user_data_dir = self.output_dir / "amazon_browser_data"
+                user_data_dir.mkdir(exist_ok=True)
+                
+                browser = self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=str(user_data_dir),
+                    headless=not self.manual_mode,
+                    args=browser_args,
+                    ignore_https_errors=True
+                )
+                context = browser
+                page = context.new_page()
+            else:
+                print("Using incognito browser for Amazon")
+                browser = self.playwright.chromium.launch(headless=not self.manual_mode, args=browser_args)
+                context = browser.new_context(
+                    ignore_https_errors=True,
+                    viewport={'width': 1280, 'height': 800}
+                )
+                page = context.new_page()
+            
+            # Set default timeout
+            page.set_default_timeout(self.timeout)
+            
+            # Try to load a saved session if available and not in pure manual mode
+            session_loaded = False
+            if not self.pure_manual and Path(self.amazon_session_file).exists():
+                try:
+                    print("Attempting to load saved Amazon session...")
+                    self._load_session(context, self.amazon_session_file)
                     
-                    # Open Amazon homepage
-                    page.goto('https://www.amazon.com', timeout=self.timeout)
+                    # Navigate to Amazon to check if the session is valid
+                    page.goto('https://www.amazon.com/', timeout=self.timeout)
+                    page.wait_for_load_state('networkidle', timeout=self.timeout)
                     
-                    # Wait for user to complete manual login
-                    user_input = ""
-                    while user_input not in ['continue', 'skip']:
-                        user_input = input("Enter 'continue' when ready or 'skip' to abort: ").lower()
-                        
-                    if user_input == 'skip':
-                        print("Login attempt aborted by user.")
-                        return
-                    
-                    # Navigate to orders page
-                    print("Navigating to orders page...")
-                    page.goto('https://www.amazon.com/gp/your-account/order-history', timeout=self.timeout)
-                else:
-                    print("Navigating to Amazon login page...")
-                    # Login to Amazon - use a longer timeout for initial page load
-                    initial_load_timeout = max(self.timeout * 2, 60000)  # At least 60 seconds
-                    print(f"Using extended timeout of {initial_load_timeout/1000} seconds for initial page load...")
-                    
-                    try:
-                        page.goto('https://www.amazon.com/signin', timeout=initial_load_timeout)
-                    except TimeoutError:
-                        print("Initial page load timed out, but we'll try to continue anyway...")
-                        # Take a screenshot to see what happened
-                        screenshot_path = self.output_dir / "amazon_initial_load_error.png"
-                        page.screenshot(path=str(screenshot_path))
-                        print(f"Saved initial load error screenshot to {screenshot_path}")
-                    
-                    # Wait for the page to stabilize
-                    print("Waiting for page to stabilize...")
-                    try:
-                        page.wait_for_load_state('networkidle', timeout=self.timeout)
-                    except:
-                        print("Page didn't reach network idle state, continuing anyway...")
-                    
-                    # Check if we're already logged in
+                    # Check if we're logged in
                     if "nav-link-accountList" in page.content() or "Your Account" in page.content():
-                        print("Already logged into Amazon (session restored)")
+                        print("Successfully loaded Amazon session, already logged in")
+                        session_loaded = True
                     else:
-                        print("Looking for login form...")
-                        
-                        # Check if the login form is visible
-                        login_form_visible = False
-                        try:
-                            login_form_visible = page.wait_for_selector('#ap_email', timeout=self.timeout, state='visible') is not None
-                        except:
-                            print("Login form not immediately visible")
-                        
-                        if not login_form_visible:
-                            # Try navigating directly to the login page again
-                            print("Trying to navigate to login page again...")
-                            page.goto('https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F%3Fref_%3Dnav_signin&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0', timeout=self.timeout)
-                            try:
-                                page.wait_for_selector('#ap_email', timeout=self.timeout)
-                            except:
-                                print("Still can't find login form. Taking a screenshot for debugging...")
-                                screenshot_path = self.output_dir / "amazon_login_form_error.png"
-                                page.screenshot(path=str(screenshot_path))
-                                print(f"Saved login form error screenshot to {screenshot_path}")
-                                
-                                if self.manual_mode:
-                                    print("\n=== MANUAL INTERVENTION NEEDED ===")
-                                    print("The script couldn't find the login form automatically.")
-                                    print("Please navigate to the login page manually in the browser.")
-                                    print("Type 'continue' when you're on the login page, or 'skip' to abort.")
-                                    print("==========================================\n")
-                                    
-                                    user_input = ""
-                                    while user_input not in ['continue', 'skip']:
-                                        user_input = input("Enter 'continue' when ready or 'skip' to abort: ").lower()
-                                        
-                                    if user_input == 'skip':
-                                        print("Login attempt aborted by user.")
-                                        return
-                                else:
-                                    print("Cannot proceed without login form. Aborting.")
-                                    return
+                        print("Session loaded but not logged in, will proceed with login")
+                except Exception as e:
+                    print(f"Error loading Amazon session: {e}")
+            
+            # If session wasn't loaded or we're in pure manual mode, proceed with login
+            if not session_loaded:
+                # Navigate to Amazon login page
+                print("Navigating to Amazon login page...")
+                try:
+                    page.goto('https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2F%3Fref_%3Dnav_signin&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=usflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0', timeout=self.timeout)
+                    page.wait_for_load_state('networkidle', timeout=self.timeout)
+                except Exception as e:
+                    print(f"Error navigating to Amazon login page: {e}")
+                    # Try a simpler URL as fallback
+                    page.goto('https://www.amazon.com/ap/signin', timeout=self.timeout)
+                    page.wait_for_load_state('networkidle', timeout=self.timeout)
+                
+                # Check if we need to handle login
+                if "ap/signin" in page.url or "sign-in" in page.url:
+                    print("On Amazon login page, proceeding with authentication")
                     
-                    print("Filling in Amazon login credentials...")
-                    try:
-                        # Wait for the email field to be visible
-                        page.wait_for_selector('#ap_email', timeout=self.timeout)
-                        page.fill('#ap_email', self.config.amazon_credentials.username)
-                        
-                        print("Clicking continue button...")
-                        page.click('#continue')
-                        
-                        # Wait for the password field to be visible
-                        page.wait_for_selector('#ap_password', timeout=self.timeout)
-                        page.fill('#ap_password', self.config.amazon_credentials.password)
-                        
-                        print("Clicking sign-in button...")
-                        page.click('#signInSubmit')
-                    except Exception as e:
-                        print(f"Error during login form interaction: {e}")
-                        screenshot_path = self.output_dir / "amazon_login_interaction_error.png"
-                        page.screenshot(path=str(screenshot_path))
-                        print(f"Saved login interaction error screenshot to {screenshot_path}")
-                        
-                        if not self.manual_mode:
-                            print("Switching to manual mode due to login form interaction error...")
-                            self.manual_mode = True
-                    
-                    # Special handling for Amazon verification
-                    print("\n=== AMAZON VERIFICATION ===")
-                    print("If you see a verification challenge:")
-                    print("1. Complete any CAPTCHA puzzles in the browser")
-                    print("2. If prompted for a verification code, check your email or phone")
-                    print("3. Enter the code you receive")
-                    print("4. If you see 'unusual activity' warnings, approve the login")
-                    print("==========================================\n")
-                    
-                    if self.manual_mode:
-                        print("\n=== MANUAL AUTHENTICATION MODE ===")
-                        print("Please complete any verification steps in the browser window.")
-                        print("Type 'continue' and press Enter when you've finished logging in.")
-                        print("Type 'skip' if you want to abort this login attempt.")
-                        print("==========================================\n")
-                        
-                        # Wait for user to type 'continue' or 'skip'
-                        user_input = ""
-                        while user_input not in ['continue', 'skip']:
-                            user_input = input("Enter 'continue' when ready or 'skip' to abort: ").lower()
-                            
-                        if user_input == 'skip':
-                            print("Login attempt aborted by user.")
-                            return
-                    else:
-                        print("\n=== MANUAL AUTHENTICATION REQUIRED ===")
-                        print("Please complete any verification steps in the browser window.")
-                        print("The script will wait for 1 minute or until you complete the login.")
-                        print("After logging in, the script will continue automatically.")
-                        print("==========================================\n")
+                    # Check if we're in pure manual mode
+                    if self.pure_manual:
+                        print("\n*** PURE MANUAL MODE ***")
+                        print("Please log in to Amazon manually.")
+                        print(f"You have {self.manual_timeout/1000} seconds to complete the login.")
+                        print("The browser will wait for you to finish.\n")
                         
                         # Wait for manual intervention
                         page.wait_for_timeout(self.manual_timeout)
+                    else:
+                        # Try automated login first
+                        try:
+                            print("Attempting automated login...")
+                            
+                            # Find and fill email field
+                            email_selectors = ['input[type="email"]', '#ap_email', 'input[name="email"]']
+                            email_filled = False
+                            
+                            for selector in email_selectors:
+                                try:
+                                    if page.is_visible(selector):
+                                        # Type email with random delays between characters
+                                        email_input = page.query_selector(selector)
+                                        if email_input:
+                                            print("Found email field, entering email...")
+                                            for char in self.amazon_credentials.username:
+                                                email_input.type(char, delay=random.randint(50, 150))
+                                                page.wait_for_timeout(random.randint(10, 50))
+                                            
+                                            # Find and click continue button
+                                            continue_selectors = ['input[type="submit"]', '#continue', 'input[id="continue"]', 'span:has-text("Continue")']
+                                            for continue_selector in continue_selectors:
+                                                try:
+                                                    if page.is_visible(continue_selector):
+                                                        print("Clicking continue button...")
+                                                        page.click(continue_selector)
+                                                        page.wait_for_load_state('networkidle', timeout=10000)
+                                                        email_filled = True
+                                                        break
+                                                except Exception as e:
+                                                    print(f"Error clicking continue button with selector {continue_selector}: {e}")
+                                            
+                                            if email_filled:
+                                                break
+                                except Exception as e:
+                                    print(f"Error with email selector {selector}: {e}")
+                            
+                            # Find and fill password field
+                            password_selectors = ['input[type="password"]', '#ap_password', 'input[name="password"]']
+                            for selector in password_selectors:
+                                try:
+                                    if page.is_visible(selector):
+                                        # Type password with random delays between characters
+                                        password_input = page.query_selector(selector)
+                                        if password_input:
+                                            print("Found password field, entering password...")
+                                            for char in self.amazon_credentials.password:
+                                                password_input.type(char, delay=random.randint(50, 150))
+                                                page.wait_for_timeout(random.randint(10, 50))
+                                            
+                                            # Find and click sign-in button
+                                            signin_selectors = ['input[type="submit"]', '#signInSubmit', 'input[id="signInSubmit"]', 'span:has-text("Sign-In")']
+                                            for signin_selector in signin_selectors:
+                                                try:
+                                                    if page.is_visible(signin_selector):
+                                                        print("Clicking sign-in button...")
+                                                        page.click(signin_selector)
+                                                        page.wait_for_load_state('networkidle', timeout=10000)
+                                                        break
+                                                except Exception as e:
+                                                    print(f"Error clicking sign-in button with selector {signin_selector}: {e}")
+                                            
+                                            break
+                                except Exception as e:
+                                    print(f"Error with password selector {selector}: {e}")
+                            
+                            # Check for CAPTCHA or verification challenges
+                            captcha_indicators = [
+                                'captcha', 
+                                'verification', 
+                                'puzzle', 
+                                'security challenge',
+                                'authentication required'
+                            ]
+                            
+                            page_content = page.content().lower()
+                            if any(indicator in page_content for indicator in captcha_indicators):
+                                print("\n*** CAPTCHA or verification detected ***")
+                                print("Please complete the verification manually.")
+                                print(f"You have {self.manual_timeout/1000} seconds to complete the verification.")
+                                print("The browser will wait for you to finish.\n")
+                                
+                                # Take a screenshot for debugging
+                                screenshot_path = self.output_dir / "amazon_captcha.png"
+                                page.screenshot(path=str(screenshot_path))
+                                print(f"Saved CAPTCHA screenshot to {screenshot_path}")
+                                
+                                # Wait for manual intervention
+                                page.wait_for_timeout(self.manual_timeout)
+                        except Exception as e:
+                            print(f"Error during automated login: {e}")
+                            print("\n*** Switching to manual login mode ***")
+                            print("Please log in to Amazon manually.")
+                            print(f"You have {self.manual_timeout/1000} seconds to complete the login.")
+                            print("The browser will wait for you to finish.\n")
+                            
+                            # Take a screenshot for debugging
+                            screenshot_path = self.output_dir / "amazon_login_error.png"
+                            page.screenshot(path=str(screenshot_path))
+                            print(f"Saved login error screenshot to {screenshot_path}")
+                            
+                            # Wait for manual intervention
+                            page.wait_for_timeout(self.manual_timeout)
                 
                 # Check if login was successful
                 if "nav-link-accountList" in page.content() or "Your Account" in page.content():
@@ -1633,157 +1788,622 @@ class WebScraper:
                             # Save the session for future use
                             self._save_session(context, self.amazon_session_file)
                         else:
+                            print("Could not verify login status. Aborting Amazon scraping.")
                             return
-
-                print("Navigating to orders page...")
-                # Navigate to orders page
-                page.goto('https://www.amazon.com/gp/your-account/order-history', timeout=self.timeout)
-                page.wait_for_load_state('networkidle', timeout=self.timeout)
-
-                # Create date-based directory
-                date_dir = self.output_dir / datetime.now().strftime("%Y-%m")
-                date_dir.mkdir(exist_ok=True)
-
-                # Setup download handler
-                page.on('download', lambda download: download.save_as(
-                    date_dir / f"amazon_invoice_{download.suggested_filename}"
-                ))
-
-                print("Looking for invoice links...")
-                # Find and click invoice links
-                invoice_links = page.query_selector_all('a:has-text("Invoice")')
-                if not invoice_links:
-                    print("No invoice links found. The page structure might have changed or there are no invoices.")
-                    
-                    # Save a screenshot for debugging
-                    screenshot_path = date_dir / "amazon_debug_screenshot.png"
-                    page.screenshot(path=str(screenshot_path))
-                    print(f"Saved debug screenshot to {screenshot_path}")
-                else:
-                    print(f"Found {len(invoice_links)} invoice links")
-                    for i, link in enumerate(invoice_links):
-                        print(f"Clicking invoice link {i+1}/{len(invoice_links)}")
-                        link.click()
-                        page.wait_for_timeout(2000)  # Wait for download to start
-
             except TimeoutError as e:
-                print(f"Timeout error: {e}")
+                print(f"Timeout error during Amazon scraping: {e}")
                 print("The operation took too long to complete. This could be due to slow internet connection or website changes.")
                 # Save a screenshot for debugging
                 try:
                     screenshot_path = self.output_dir / "amazon_timeout_error.png"
                     page.screenshot(path=str(screenshot_path))
-                    print(f"Saved error screenshot to {screenshot_path}")
-                except:
-                    pass
+                    print(f"Saved timeout error screenshot to {screenshot_path}")
+                except Exception as screenshot_error:
+                    print(f"Error saving timeout screenshot: {screenshot_error}")
             except Exception as e:
                 print(f"Error during Amazon scraping: {e}")
+                print(f"Error type: {type(e).__name__}")
+                print(f"Error details: {str(e)}")
+                
                 # Save a screenshot for debugging
                 try:
                     screenshot_path = self.output_dir / "amazon_error.png"
                     page.screenshot(path=str(screenshot_path))
                     print(f"Saved error screenshot to {screenshot_path}")
-                except:
-                    pass
+                except Exception as screenshot_error:
+                    print(f"Error saving error screenshot: {screenshot_error}")
             finally:
+                print("\n=== Finished Amazon Scraping ===\n")
                 if browser:
-                    browser.close()
+                    try:
+                        browser.close()
+                    except Exception as close_error:
+                        print(f"Error closing browser: {close_error}")
+            
+            # Navigate to orders page
+            print("Navigating to orders page...")
+            page.goto('https://www.amazon.com/gp/your-account/order-history', timeout=self.timeout)
+            page.wait_for_load_state('networkidle', timeout=self.timeout)
 
-    def check_walmart_login(self, page):
-        """Check if logged in to Walmart."""
-        try:
-            # Wait longer for any login processes to complete
-            print("Waiting for login processes to complete...")
-            page.wait_for_timeout(10000)  # 10 second delay to ensure login completes
+            # Setup download handler with a dynamic prefix
+            self.current_order_number = "unknown"
+            self.current_purchase_date = None
             
-            # Check for account-related elements that indicate logged-in state
-            logged_in_selectors = [
-                '[data-automation-id="account-dropdown"]',
-                '[data-automation-id="account-button"]',
-                '[data-testid="account-dropdown"]',
-                '[data-testid="account-button"]',
-                '[data-testid="account-username"]',
-                '[data-testid="sign-out"]',
-                'button:has-text("Account")',
-                'button:has-text("My Account")',
-                'a:has-text("Account")',
-                'a:has-text("My Account")',
-                'text="Account Home"',
-                'text="Your Account"',
-                'text="Sign Out"'
-            ]
+            def download_handler(download):
+                # If we have a purchase date, use it for organizing files
+                if self.current_purchase_date:
+                    # Get the appropriate directory based on the purchase date
+                    invoice_dir = self._get_invoice_directory("amazon", self.current_purchase_date)
+                    
+                    # Format date for filename
+                    date_str = self.current_purchase_date.strftime("%m-%d")
+                    
+                    # Create filename with order number and date
+                    filename = f"amazon_invoice_{self.current_order_number}_{date_str}.pdf"
+                    
+                    # Check if file already exists
+                    file_path = invoice_dir / filename
+                    if file_path.exists():
+                        print(f"Invoice already exists: {file_path}")
+                        # Skip download by returning a path (download.save_as won't be called)
+                        return str(file_path)
+                    
+                    # Save the file
+                    download.save_as(file_path)
+                    print(f"Downloaded invoice to {file_path}")
+                    return str(file_path)
+                else:
+                    # Fall back to date-based directory if no purchase date
+                    downloads_dir = self.output_dir / "downloads"
+                    downloads_dir.mkdir(exist_ok=True)
+                    unknown_dir = downloads_dir / "unknown_date"
+                    unknown_dir.mkdir(exist_ok=True)
+                    
+                    # Create filename with timestamp
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"amazon_invoice_{self.current_order_number}_{timestamp}.pdf"
+                    
+                    # Save the file
+                    file_path = unknown_dir / filename
+                    download.save_as(file_path)
+                    print(f"Downloaded invoice to {file_path} (unknown purchase date)")
+                    return str(file_path)
             
-            # First check if we're on an account-related page
-            current_url = page.url
-            if '/account' in current_url or '/myaccount' in current_url:
-                print(f"On account page: {current_url} - likely logged in")
-                return True
+            # Set the download handler
+            page.on('download', download_handler)
+
+            print("Looking for orders and invoice links...")
+            
+            # Initialize pagination variables
+            current_page = 1
+            has_more_pages = True
+            processed_orders = 0
+            total_orders_processed = 0
+            max_orders_to_process = self.max_orders if self.max_orders > 0 else float('inf')
+            
+            # Process all pages of orders
+            while has_more_pages and total_orders_processed < max_orders_to_process:
+                print(f"\n--- Processing Amazon orders page {current_page} ---\n")
                 
-            # Check for visible selectors
-            for selector in logged_in_selectors:
+                # Wait for the orders page to load completely
                 try:
-                    if page.is_visible(selector, timeout=3000):
-                        print(f"Detected logged-in state using selector: {selector}")
-                        return True
-                except Exception:
-                    pass
-            
-            # Try JavaScript approach as a fallback
-            try:
-                js_result = page.evaluate('''
-                    () => {
-                        // Check for account-related elements
-                        const accountElements = document.querySelectorAll('[data-testid*="account"], [data-automation-id*="account"]');
-                        if (accountElements.length > 0) {
-                            return true;
-                        }
-                        
-                        // Check for sign-out links
-                        const signOutElements = document.querySelectorAll('a[href*="signout"], a[href*="logout"]');
-                        if (signOutElements.length > 0) {
-                            return true;
-                        }
-                        
-                        // Check page content for account-related text
-                        const pageText = document.body.innerText;
-                        if (pageText.includes("Sign Out") || 
-                            pageText.includes("Your Account") || 
-                            pageText.includes("Account Home")) {
-                            return true;
-                        }
-                        
-                        return false;
-                    }
-                ''')
+                    page.wait_for_load_state('domcontentloaded', timeout=20000)
+                    page.wait_for_load_state('load', timeout=20000)
+                    page.wait_for_timeout(2000)  # Additional wait for dynamic content
+                except Exception as e:
+                    print(f"Error waiting for orders page: {e}")
+                    # Take a screenshot for debugging
+                    screenshot_path = self.output_dir / f"amazon_orders_timeout_page{current_page}.png"
+                    page.screenshot(path=str(screenshot_path))
+                    print(f"Saved timeout screenshot to {screenshot_path}")
                 
-                if js_result:
-                    print("Detected logged-in state using JavaScript approach")
-                    return True
-            except Exception as e:
-                print(f"Error in JavaScript login check: {e}")
+                # Find all order cards/rows with multiple selectors
+                print("Looking for order cards/rows...")
+                order_elements = []
+                
+                # Try multiple selectors to find order elements
+                order_selectors = [
+                    '.order-card',
+                    '.js-order-card',
+                    '.a-box-group',
+                    '.order-info',
+                    '.order',
+                    '.your-orders-content .a-box',
+                    '.a-section:has(.shipment)',
+                    '.a-box:has(.a-color-secondary:has-text("Order placed"))',
+                    '.yo-item-container',
+                    '.a-box-group:has(.a-box-inner)'
+                ]
+                
+                for selector in order_selectors:
+                    try:
+                        print(f"Trying selector: {selector}")
+                        elements = page.query_selector_all(selector)
+                        if elements and len(elements) > 0:
+                            print(f"Found {len(elements)} order elements using selector: {selector}")
+                            order_elements = elements
+                            break
+                    except Exception as e:
+                        print(f"Error with selector '{selector}': {e}")
+                
+                # If no order elements found, try a JavaScript approach
+                if not order_elements:
+                    print("No specific order elements found, trying JavaScript approach...")
+                    try:
+                        # Use JavaScript to find potential order elements
+                        js_result = page.evaluate("""() => {
+                            // Look for elements that might be order containers
+                            const potentialOrderElements = [
+                                // Elements with order-related classes
+                                ...Array.from(document.querySelectorAll('[class*="order"]')),
+                                // Elements with shipment information
+                                ...Array.from(document.querySelectorAll('.a-box-group, .a-box')),
+                                // Elements with order dates
+                                ...Array.from(document.querySelectorAll('div:has(.a-color-secondary:contains("Order placed"))')),
+                            ];
+                            
+                            // Return the count of potential elements
+                            return potentialOrderElements.length;
+                        }""")
+                        
+                        print(f"JavaScript found {js_result} potential order elements")
+                        
+                        if js_result > 0:
+                            # We found elements via JavaScript, set a flag to use JS for processing
+                            print("Found order elements via JavaScript, will use them for processing")
+                            has_js_elements = True
+                        else:
+                            has_js_elements = False
+                            print("No order elements found via JavaScript either")
+                    except Exception as e:
+                        print(f"JavaScript approach failed: {e}")
+                        has_js_elements = False
+                else:
+                    has_js_elements = False
+                
+                # Process orders found using standard selectors
+                if order_elements:
+                    print(f"Processing {len(order_elements)} orders on page {current_page}")
+                    
+                    for i, order_element in enumerate(order_elements):
+                        try:
+                            # Check if we've reached the maximum number of orders to process
+                            if total_orders_processed >= max_orders_to_process:
+                                print(f"Reached maximum number of orders to process ({max_orders_to_process})")
+                                has_more_pages = False
+                                break
+                                
+                            print(f"Processing order {i+1}/{len(order_elements)}")
+                            
+                            # Try to extract order number
+                            order_number = "unknown"
+                            try:
+                                # Try multiple selectors for order number
+                                order_number_selectors = [
+                                    '.order-info',
+                                    '.order-number',
+                                    '.order-id',
+                                    '.order-date-invoice-item',
+                                    'span:has-text("Order #")',
+                                    '.a-color-secondary:has-text("Order #")'
+                                ]
+                                
+                                for selector in order_number_selectors:
+                                    try:
+                                        order_id_elem = order_element.query_selector(selector)
+                                        if order_id_elem:
+                                            order_text = order_id_elem.text_content()
+                                            # Try to extract order number with regex
+                                            match = re.search(r'Order\s+#?\s*(\w+-\w+-\w+|\w+)', order_text)
+                                            if match:
+                                                order_number = match.group(1)
+                                                print(f"Found order number: {order_number}")
+                                                break
+                                    except Exception as e:
+                                        print(f"Error extracting order number with selector {selector}: {e}")
+                            except Exception as e:
+                                print(f"Error extracting order number: {e}")
+                            
+                            # Set the current order number for the download handler
+                            self.current_order_number = order_number
+                            
+                            # Try to find and extract purchase date
+                            try:
+                                # Look for date elements within this order
+                                date_selectors = [
+                                    '.order-date-invoice-item',
+                                    '.a-color-secondary:has-text("Order placed")',
+                                    '.order-date',
+                                    'span:has-text("Order placed:")'
+                                ]
+                                
+                                date_text = None
+                                for selector in date_selectors:
+                                    try:
+                                        date_element = order_element.query_selector(selector)
+                                        if date_element:
+                                            date_text = date_element.text_content()
+                                            print(f"Found date text: {date_text}")
+                                            break
+                                    except Exception as e:
+                                        print(f"Error with date selector {selector}: {e}")
+                                
+                                if date_text:
+                                    # Try to extract date with regex
+                                    date_patterns = [
+                                        r'Order placed:\s*(\w+\s+\d+,\s*\d{4})',
+                                        r'Order placed\s*(\w+\s+\d+,\s*\d{4})',
+                                        r'Ordered on\s*(\w+\s+\d+,\s*\d{4})',
+                                        r'(\w+\s+\d+,\s*\d{4})',
+                                        r'(\d{1,2}/\d{1,2}/\d{2,4})',
+                                        r'(\d{1,2}-\d{1,2}-\d{2,4})'
+                                    ]
+                                    
+                                    for pattern in date_patterns:
+                                        match = re.search(pattern, date_text)
+                                        if match:
+                                            date_str = match.group(1)
+                                            print(f"Extracted date string: {date_str}")
+                                            
+                                            # Try multiple date formats
+                                            date_formats = [
+                                                '%B %d, %Y',  # January 1, 2023
+                                                '%b %d, %Y',  # Jan 1, 2023
+                                                '%m/%d/%Y',   # 01/01/2023
+                                                '%m/%d/%y',   # 01/01/23
+                                                '%m-%d-%Y',   # 01-01-2023
+                                                '%m-%d-%y'    # 01-01-23
+                                            ]
+                                            
+                                            for date_format in date_formats:
+                                                try:
+                                                    self.current_purchase_date = datetime.strptime(date_str, date_format)
+                                                    print(f"Parsed purchase date: {self.current_purchase_date}")
+                                                    break
+                                                except ValueError:
+                                                    continue
+                                            
+                                            if self.current_purchase_date:
+                                                break
+                            except Exception as e:
+                                print(f"Error extracting purchase date: {e}")
+                                self.current_purchase_date = None
+                            
+                            # Look for invoice links within this order
+                            invoice_links = []
+                            invoice_selectors = [
+                                'a:has-text("Invoice")',
+                                'a:has-text("View invoice")',
+                                'a:has-text("Download invoice")',
+                                'a[href*="invoice"]',
+                                '.a-link-normal:has-text("Invoice")',
+                                'span:has-text("Invoice")'
+                            ]
+                            
+                            for selector in invoice_selectors:
+                                try:
+                                    links = order_element.query_selector_all(selector)
+                                    if links and len(links) > 0:
+                                        print(f"Found {len(links)} invoice links using selector: {selector}")
+                                        invoice_links = links
+                                        break
+                                except Exception as e:
+                                    print(f"Error with invoice selector '{selector}': {e}")
+                            
+                            if invoice_links:
+                                for j, link in enumerate(invoice_links):
+                                    try:
+                                        print(f"Clicking invoice link {j+1}/{len(invoice_links)} for order {order_number}")
+                                        
+                                        # Check if we need to handle an existing invoice
+                                        if self.current_purchase_date:
+                                            invoice_dir = self._get_invoice_directory("amazon", self.current_purchase_date)
+                                            date_str = self.current_purchase_date.strftime("%m-%d")
+                                            filename = f"amazon_invoice_{self.current_order_number}_{date_str}.pdf"
+                                            file_path = invoice_dir / filename
+                                            
+                                            if file_path.exists():
+                                                print(f"Invoice already exists: {file_path}")
+                                                # Skip this invoice and continue with the next one
+                                                continue
+                                        
+                                        # Click the link to download the invoice
+                                        link.click()
+                                        page.wait_for_timeout(3000)  # Wait for download to start
+                                        processed_orders += 1
+                                    except Exception as e:
+                                        print(f"Error clicking invoice link: {e}")
+                            else:
+                                print(f"No invoice links found for order {order_number}")
+                                
+                                # Try to find "Order Details" or similar links
+                                details_selectors = [
+                                    'a:has-text("Order Details")',
+                                    'a:has-text("View order details")',
+                                    'a:has-text("View order")',
+                                    'a[href*="order-details"]',
+                                    '.a-link-normal:has-text("Details")'
+                                ]
+                                
+                                details_link = None
+                                for selector in details_selectors:
+                                    try:
+                                        link = order_element.query_selector(selector)
+                                        if link:
+                                            print(f"Found order details link using selector: {selector}")
+                                            details_link = link
+                                            break
+                                    except Exception as e:
+                                        print(f"Error with details selector '{selector}': {e}")
+                                
+                                if details_link:
+                                    try:
+                                        print(f"Clicking order details link for order {order_number}")
+                                        
+                                        # Open in a new tab to avoid losing our place on the orders page
+                                        # First get the href attribute
+                                        details_url = None
+                                        try:
+                                            details_url = details_link.get_attribute('href')
+                                        except:
+                                            # If we can't get the href, just click the link
+                                            details_url = None
+                                        
+                                        if details_url and details_url.startswith('http'):
+                                            # Open in a new page
+                                            print(f"Opening details in new tab: {details_url}")
+                                            details_page = context.new_page()
+                                            details_page.goto(details_url, timeout=self.timeout)
+                                            details_page.wait_for_load_state('domcontentloaded', timeout=self.timeout)
+                                        else:
+                                            # Click the link and navigate in the current page
+                                            details_link.click()
+                                            page.wait_for_load_state('domcontentloaded', timeout=self.timeout)
+                                            details_page = page
+                                        
+                                        # Wait for page to load
+                                        details_page.wait_for_timeout(2000)
+                                        
+                                        # Try to extract purchase date from the details page
+                                        try:
+                                            # Look for date elements on the details page
+                                            details_date_selectors = [
+                                                '.order-date-invoice-item',
+                                                '.a-color-secondary:has-text("Order placed")',
+                                                '.order-date',
+                                                'span:has-text("Order placed:")',
+                                                '.date-display'
+                                            ]
+                                            
+                                            details_date_text = None
+                                            for selector in details_date_selectors:
+                                                try:
+                                                    date_element = details_page.query_selector(selector)
+                                                    if date_element:
+                                                        details_date_text = date_element.text_content()
+                                                        print(f"Found date text on details page: {details_date_text}")
+                                                        break
+                                                except Exception as e:
+                                                    print(f"Error with date selector {selector} on details page: {e}")
+                                            
+                                            if details_date_text:
+                                                # Try to extract date with regex
+                                                date_patterns = [
+                                                    r'Order placed:\s*(\w+\s+\d+,\s*\d{4})',
+                                                    r'Order placed\s*(\w+\s+\d+,\s*\d{4})',
+                                                    r'Ordered on\s*(\w+\s+\d+,\s*\d{4})',
+                                                    r'(\w+\s+\d+,\s*\d{4})',
+                                                    r'(\d{1,2}/\d{1,2}/\d{2,4})',
+                                                    r'(\d{1,2}-\d{1,2}-\d{2,4})'
+                                                ]
+                                                
+                                                for pattern in date_patterns:
+                                                    match = re.search(pattern, details_date_text)
+                                                    if match:
+                                                        date_str = match.group(1)
+                                                        print(f"Extracted date string from details page: {date_str}")
+                                                        
+                                                        # Try multiple date formats
+                                                        date_formats = [
+                                                            '%B %d, %Y',  # January 1, 2023
+                                                            '%b %d, %Y',  # Jan 1, 2023
+                                                            '%m/%d/%Y',   # 01/01/2023
+                                                            '%m/%d/%y',   # 01/01/23
+                                                            '%m-%d-%Y',   # 01-01-2023
+                                                            '%m-%d-%y'    # 01-01-23
+                                                        ]
+                                                        
+                                                        for date_format in date_formats:
+                                                            try:
+                                                                self.current_purchase_date = datetime.strptime(date_str, date_format)
+                                                                print(f"Parsed purchase date from details page: {self.current_purchase_date}")
+                                                                break
+                                                            except ValueError:
+                                                                continue
+                                                        
+                                                        if self.current_purchase_date:
+                                                            break
+                                    except Exception as e:
+                                        print(f"Error extracting purchase date from details page: {e}")
+                                        
+                                        # Look for invoice links on the details page
+                                        details_invoice_selectors = [
+                                            'a:has-text("Invoice")',
+                                            'a:has-text("View invoice")',
+                                            'a:has-text("Download invoice")',
+                                            'a[href*="invoice"]',
+                                            '.a-link-normal:has-text("Invoice")'
+                                        ]
+                                        
+                                        details_invoice_found = False
+                                        for selector in details_invoice_selectors:
+                                            try:
+                                                links = details_page.query_selector_all(selector)
+                                                if links and len(links) > 0:
+                                                    print(f"Found {len(links)} invoice links on details page using selector: {selector}")
+                                                    for link in links:
+                                                        try:
+                                                            print(f"Clicking invoice link on details page for order {order_number}")
+                                                            
+                                                            # Check if we need to handle an existing invoice
+                                                            if self.current_purchase_date:
+                                                                invoice_dir = self._get_invoice_directory("amazon", self.current_purchase_date)
+                                                                date_str = self.current_purchase_date.strftime("%m-%d")
+                                                                filename = f"amazon_invoice_{self.current_order_number}_{date_str}.pdf"
+                                                                file_path = invoice_dir / filename
+                                                                
+                                                                if file_path.exists():
+                                                                    print(f"Invoice already exists: {file_path}")
+                                                                    # Skip this invoice and continue with the next one
+                                                                    continue
+                                                            
+                                                            # Click the link to download the invoice
+                                                            link.click()
+                                                            details_page.wait_for_timeout(3000)  # Wait for download to start
+                                                            processed_orders += 1
+                                                            details_invoice_found = True
+                                                        except Exception as e:
+                                                            print(f"Error clicking invoice link on details page: {e}")
+                                                    
+                                                    if details_invoice_found:
+                                                        break
+                                            except Exception as e:
+                                                print(f"Error with invoice selector '{selector}' on details page: {e}")
+                                        
+                                        # If we opened a new tab, close it
+                                        if details_url and details_url.startswith('http'):
+                                            try:
+                                                details_page.close()
+                                            except Exception as e:
+                                                print(f"Error closing details page: {e}")
+                                            
+                                            # Make sure we're back on the orders page
+                                            page.bring_to_front()
+                                    except Exception as e:
+                                        print(f"Error processing order details: {e}")
+                                        
+                                        # If we navigated away from the orders page, go back
+                                        if "order-history" not in page.url:
+                                            print("Navigating back to orders page...")
+                                            page.goto('https://www.amazon.com/gp/your-account/order-history', timeout=self.timeout)
+                                            page.wait_for_load_state('networkidle', timeout=self.timeout)
+                            
+                            # Increment the total orders processed counter
+                            total_orders_processed += 1
+                        except Exception as e:
+                            print(f"Error processing order: {e}")
+                # Process orders using JavaScript approach if needed
+                elif has_js_elements:
+                    print("Processing orders using JavaScript approach...")
+                    try:
+                        # Use JavaScript to process orders
+                        js_processed = page.evaluate("""() => {
+                            // Function to extract text content safely
+                            function safeTextContent(element) {
+                                return element ? element.textContent.trim() : '';
+                            }
+                            
+                            // Find all potential order elements
+                            const potentialOrderElements = [
+                                ...Array.from(document.querySelectorAll('[class*="order"]')),
+                                ...Array.from(document.querySelectorAll('.a-box-group, .a-box')),
+                                ...Array.from(document.querySelectorAll('div:has(.a-color-secondary:contains("Order placed"))')),
+                            ];
+                            
+                            // Find all invoice links
+                            const invoiceLinks = Array.from(document.querySelectorAll('a[href*="invoice"], a:contains("Invoice"), a:contains("invoice")'));
+                            
+                            // Return the count of invoice links found
+                            return invoiceLinks.length;
+                        }""")
+                        
+                        print(f"JavaScript found and processed {js_processed} potential invoice links")
+                        
+                        if js_processed > 0:
+                            processed_orders += js_processed
+                        else:
+                            print("No invoice links found via JavaScript")
+                    except Exception as e:
+                        print(f"JavaScript processing failed: {e}")
+                else:
+                    print("No order elements found on this page")
+                
+                # Check if we need to navigate to the next page
+                if processed_orders == 0:
+                    print("No orders processed on this page, might be at the end")
+                
+                # Look for next page button
+                next_page_selectors = [
+                    'a:has-text("Next Page")',
+                    'a:has-text("Next")',
+                    'a.a-pagination-next',
+                    'li.a-last > a',
+                    'a[href*="startIndex="]',
+                    'a.a-link-normal[href*="orderFilter="]'
+                ]
+                
+                next_page_found = False
+                for selector in next_page_selectors:
+                    try:
+                        next_button = page.query_selector(selector)
+                        if next_button:
+                            print(f"Found next page button using selector: {selector}")
+                            
+                            # Check if the next button is disabled
+                            is_disabled = False
+                            try:
+                                parent_element = next_button.evaluate('node => node.parentElement')
+                                if parent_element:
+                                    parent_class = parent_element.get_attribute('class') or ''
+                                    if 'a-disabled' in parent_class:
+                                        is_disabled = True
+                            except:
+                                pass
+                            
+                            if not is_disabled:
+                                print("Clicking next page button...")
+                                next_button.click()
+                                page.wait_for_load_state('domcontentloaded', timeout=self.timeout)
+                                page.wait_for_timeout(2000)  # Additional wait for dynamic content
+                                current_page += 1
+                                next_page_found = True
+                                break
+                            else:
+                                print("Next page button is disabled, reached the last page")
+                                has_more_pages = False
+                    except Exception as e:
+                        print(f"Error with next page selector '{selector}': {e}")
+                
+                if not next_page_found:
+                    print("No next page button found, reached the last page")
+                    has_more_pages = False
+                
+                # Safety check to prevent infinite loops
+                if current_page > 20:  # Arbitrary limit
+                    print("Reached page limit (20), stopping pagination")
+                    has_more_pages = False
             
-            # If we get here, we're probably not logged in
-            print("No login indicators found, assuming not logged in")
-            return False
+            print(f"\nFinished processing Amazon orders. Total orders processed: {total_orders_processed}")
+            
+        except TimeoutError as e:
+            print(f"Timeout error during Amazon scraping: {e}")
+            print("The operation took too long to complete. This could be due to slow internet connection or website changes.")
+            # Save a screenshot for debugging
+            try:
+                screenshot_path = self.output_dir / "amazon_timeout_error.png"
+                page.screenshot(path=str(screenshot_path))
+                print(f"Saved timeout error screenshot to {screenshot_path}")
+            except Exception as screenshot_error:
+                print(f"Error saving timeout screenshot: {screenshot_error}")
         except Exception as e:
-            print(f"Error checking login status: {e}")
-            return False
-
-if __name__ == "__main__":
-    # Example usage
-    config = CompanyConfig(
-        name="TestCompany",
-        walmart_credentials=WebsiteCredentials(
-            username="test@example.com",
-            password="password"
-        ),
-        amazon_credentials=WebsiteCredentials(
-            username="test@example.com",
-            password="password"
-        ),
-        output_directory="./downloads/TestCompany"
-    )
-
-    scraper = WebScraper(config, manual_mode=True, pure_manual=True, persistent_browser=True, incognito_mode=False)
-    scraper.scrape_walmart()
-    scraper.scrape_amazon()
+            print(f"Error during Amazon scraping: {e}")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error details: {str(e)}")
+            
+            # Save a screenshot for debugging
+            try:
+                screenshot_path = self.output_dir / "amazon_error.png"
+                page.screenshot(path=str(screenshot_path))
+                print(f"Saved error screenshot to {screenshot_path}")
+            except Exception as screenshot_error:
+                print(f"Error saving error screenshot: {screenshot_error}")
